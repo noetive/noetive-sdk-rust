@@ -1,0 +1,60 @@
+[package]
+name = "noetive"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Official Rust SDK for the Noetive Semantik API: publish, search, and subscribe to semantic match streams."
+repository = "https://github.com/noetive/noetive-sdk-rust"
+homepage = "https://noetive.io"
+documentation = "https://docs.rs/noetive"
+readme = "README.md"
+keywords = ["noetive", "semantik", "embeddings", "semantic-search", "sdk"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+futures-core = "0.3"
+futures-util = "0.3"
+bytes = "1"
+tokio = { version = "1", features = ["time"] }
+http = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
+wiremock = "0.6"
+
+[[example]]
+name = "health"
+path = "examples/health.rs"
+
+[[example]]
+name = "lint"
+path = "examples/lint.rs"
+
+[[example]]
+name = "search"
+path = "examples/search.rs"
+
+[[example]]
+name = "publish_text"
+path = "examples/publish_text.rs"
+
+[[example]]
+name = "publish_vector"
+path = "examples/publish_vector.rs"
+
+[[example]]
+name = "subscribe"
+path = "examples/subscribe.rs"
+
+[[example]]
+name = "errors"
+path = "examples/errors.rs"
+
+[[example]]
+name = "custom_retry"
+path = "examples/custom_retry.rs"
