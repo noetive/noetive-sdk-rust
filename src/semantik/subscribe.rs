@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::semantik::client::Client;
 use crate::semantik::error::{decode_error_response, Error};
-use crate::semantik::sse::{Frame, ScanError, Scanner};
 use crate::semantik::transport::{
     request_id_from_headers, run_with_retry, send_raw, AuthMode, MIME_JSON, MIME_SSE,
 };
 use crate::semantik::validate::validate_target;
+use crate::sse::{Frame, ScanError, Scanner};
 
 const PATH_SUBSCRIBE: &str = "/v1/subscribe";
 

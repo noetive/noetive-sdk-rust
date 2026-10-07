@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
-description = "Official Rust SDK for the Noetive Semantik API: publish, search, and subscribe to semantic match streams."
+description = "Official Rust SDK for Noetive: Semantik semantic publish, search and subscribe, and Bud managed mail for agents."
 repository = "https://github.com/noetive/noetive-sdk-rust"
 homepage = "https://noetive.io"
 documentation = "https://docs.rs/noetive"
 readme = "README.md"
-keywords = ["noetive", "semantik", "embeddings", "semantic-search", "sdk"]
+keywords = ["noetive", "semantik", "bud", "semantic-search", "agents"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
@@ -58,3 +58,7 @@ path = "examples/errors.rs"
 [[example]]
 name = "custom_retry"
 path = "examples/custom_retry.rs"
+
+[[example]]
+name = "bud_reply"
+path = "examples/bud_reply.rs"

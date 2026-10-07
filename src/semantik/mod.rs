@@ -77,7 +77,6 @@ mod lint;
 mod publish;
 mod retry;
 mod search;
-mod sse;
 mod subscribe;
 mod transport;
 mod validate;

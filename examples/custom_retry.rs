@@ -4,7 +4,7 @@
 //! install a fully custom [`RetryPolicy`].
 //!
 //! ```text
-//! NOETIVE_KEY_SECRET=keyu_... cargo run --example custom_retry
+//! NOETIVE_KEY_SECRET=keya_... cargo run --example custom_retry
 //! ```
 
 use std::time::Duration;

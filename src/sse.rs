@@ -1,4 +1,5 @@
-//! Incremental SSE parser for the Semantik subscribe stream.
+//! Incremental Server-Sent Events parser, shared by Semantik's
+//! `/v1/subscribe` and Bud's `/v1/watch`.
 //!
 //! The scanner is fed arbitrary byte chunks from the HTTP body and
 //! yields complete [`Frame`] values as they become available. It
@@ -7,12 +8,17 @@
 //! `:`), strips a single space after `:`, and silently ignores unknown
 //! directives per the SSE spec.
 //!
-//! Per-frame accumulated size is capped at
-//! [`MAX_SSE_FRAME_BYTES`](crate::semantik::limits::MAX_SSE_FRAME_BYTES);
-//! larger frames produce [`ScanError::FrameTooLarge`]. This bounds the
-//! memory exposure of a misbehaving server.
+//! Per-frame size is capped — at [`DEFAULT_MAX_FRAME_BYTES`] unless the
+//! caller chose a bound with [`Scanner::with_max_frame`] — and a larger
+//! frame produces [`ScanError::FrameTooLarge`]. The bound covers a line
+//! that has not ended yet as well as the lines already accumulated, so a
+//! peer that never sends a line break cannot grow the buffer without
+//! limit.
 
-use crate::semantik::limits::MAX_SSE_FRAME_BYTES;
+/// The frame bound [`Scanner::new`] applies. 64 KiB is an order of
+/// magnitude larger than any Semantik event; a stream whose frames batch
+/// many events sets its own bound with [`Scanner::with_max_frame`].
+pub(crate) const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// One complete SSE event.
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
@@ -26,13 +32,18 @@ pub(crate) struct Frame {
 
 /// Scanner state. Holds an unparsed byte tail and the in-progress
 /// frame's `event`/`data` fields.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Scanner {
+    /// Bytes received that do not yet form a complete line.
     buf: Vec<u8>,
+    /// How much of `buf` is known to hold no line terminator, so a long
+    /// line arriving in many chunks is scanned once rather than once per
+    /// chunk.
+    scanned: usize,
     cur_event: String,
     cur_data: String,
     cur_size: usize,
-    pending_cr: bool,
+    max: usize,
     closed: bool,
 }
 
@@ -42,44 +53,86 @@ pub(crate) enum ScanError {
     FrameTooLarge(usize),
 }
 
+/// Where the next line in a buffer ends, if it is known yet.
+enum LineEnd {
+    /// The line is `buf[start..end]`; the next one begins at `next`.
+    Complete { end: usize, next: usize },
+    /// No terminator yet. Bytes before `resume` hold none, so the next
+    /// scan starts there.
+    Incomplete { resume: usize },
+}
+
+impl Default for Scanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scanner {
+    /// A scanner bounded by [`DEFAULT_MAX_FRAME_BYTES`].
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self::with_max_frame(DEFAULT_MAX_FRAME_BYTES)
+    }
+
+    /// A scanner whose frames are bounded by `max_frame` bytes. The
+    /// buffer grows only as frames need it, so a large bound costs memory
+    /// only when a frame that large arrives.
+    pub(crate) fn with_max_frame(max_frame: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            scanned: 0,
+            cur_event: String::new(),
+            cur_data: String::new(),
+            cur_size: 0,
+            max: max_frame,
+            closed: false,
+        }
     }
 
     /// Feed a byte chunk and yield all frames that became complete.
     /// Returned in order.
     pub(crate) fn feed(&mut self, chunk: &[u8]) -> Result<Vec<Frame>, ScanError> {
         self.buf.extend_from_slice(chunk);
+        let buf = std::mem::take(&mut self.buf);
         let mut out = Vec::new();
-        while let Some((line, advance)) = next_line(&self.buf, self.pending_cr, false) {
-            self.buf.drain(..advance);
-            self.pending_cr = false;
-            if let Some(frame) = self.consume_line(&line)? {
-                out.push(frame);
+        let mut start = 0;
+        let resume = loop {
+            match next_line(&buf, self.scanned.max(start)) {
+                LineEnd::Complete { end, next } => {
+                    if let Some(frame) = self.consume_line(&buf[start..end])? {
+                        out.push(frame);
+                    }
+                    start = next;
+                }
+                LineEnd::Incomplete { resume } => break resume,
             }
+        };
+        // The unfinished line counts towards the frame it belongs to: a
+        // peer that never ends a line is a frame that never ends.
+        let partial = buf.len() - start;
+        if self.cur_size + partial > self.max {
+            return Err(ScanError::FrameTooLarge(self.max));
         }
-        // The next_line returns None when it needs more bytes. If we
-        // see a trailing CR at end-of-buffer we don't know yet if it's
-        // a lone \r (line break) or part of \r\n. Remember it for the
-        // next feed.
-        self.pending_cr = !self.buf.is_empty() && *self.buf.last().unwrap() == b'\r';
+        self.buf = buf;
+        self.buf.drain(..start);
+        self.scanned = resume - start;
         Ok(out)
     }
 
     /// Signal end-of-stream. Returns the final frame if any partial
-    /// state was accumulated (Go's scanner does the same on clean EOF).
+    /// state was accumulated, as the SSE parsers in the other Noetive
+    /// SDKs do on a clean EOF.
     pub(crate) fn close(&mut self) -> Result<Option<Frame>, ScanError> {
         if self.closed {
             return Ok(None);
         }
         self.closed = true;
-        // Treat remaining buffer as a final unterminated line. A bare
-        // \r at the end is also flushed as an empty line break.
+        // The remaining buffer is a final unterminated line. A bare \r
+        // at the end is a line break, not part of the line.
         if !self.buf.is_empty() {
             let line = std::mem::take(&mut self.buf);
-            let (line_bytes, _) = strip_trailing_cr(&line);
-            if let Some(frame) = self.consume_line(line_bytes)? {
+            let line = line.strip_suffix(b"\r").unwrap_or(&line);
+            if let Some(frame) = self.consume_line(line)? {
                 return Ok(Some(frame));
             }
         }
@@ -110,16 +163,14 @@ impl Scanner {
             return Ok(None);
         }
         self.cur_size += line.len();
-        if self.cur_size > MAX_SSE_FRAME_BYTES {
-            return Err(ScanError::FrameTooLarge(MAX_SSE_FRAME_BYTES));
+        if self.cur_size > self.max {
+            return Err(ScanError::FrameTooLarge(self.max));
         }
         let (field, value) = split_field(line);
         match field {
             b"event" => {
-                // `value` is a slice of `line`, which itself comes from
-                // self.buf bytes already drained. Allocate a String
-                // from the bytes (lossy on non-UTF-8, which the server
-                // never emits but we still tolerate).
+                // Lossy on non-UTF-8, which the servers never emit but
+                // the parser still tolerates.
                 self.cur_event = String::from_utf8_lossy(value).into_owned();
             }
             b"data" => {
@@ -136,53 +187,31 @@ impl Scanner {
     }
 }
 
-/// Strip a single trailing `\r` from `line`. Returns the trimmed
-/// slice and whether one was stripped. Used on the final unterminated
-/// chunk at close-time.
-fn strip_trailing_cr(line: &[u8]) -> (&[u8], bool) {
-    if let Some((&b'\r', rest)) = line.split_last() {
-        (rest, true)
-    } else {
-        (line, false)
-    }
-}
-
-/// Extract the next line from `data`. Returns `(line_bytes,
-/// advance_count)` or `None` if more bytes are needed. `prior_cr`
-/// indicates that the previous feed ended on a bare `\r` — if this
-/// chunk starts with `\n`, the `\n` belongs to the prior `\r\n` and
-/// should be consumed without emitting a line.
-fn next_line(data: &[u8], prior_cr: bool, at_eof: bool) -> Option<(Vec<u8>, usize)> {
-    if prior_cr && data.first() == Some(&b'\n') {
-        // The leading \n is the tail of a \r\n straddling chunks. The
-        // line was already emitted on the previous feed when we saw
-        // the \r. Just consume the \n.
-        return Some((Vec::new(), 1));
-    }
-    for (i, &b) in data.iter().enumerate() {
+/// Find the end of the next line, scanning from `from` (the bytes of the
+/// current line before it are already known to hold no terminator).
+///
+/// A `\r` as the last byte is deferred rather than taken as a line
+/// break: the next chunk may begin with the `\n` of a `\r\n`.
+fn next_line(buf: &[u8], from: usize) -> LineEnd {
+    for (i, &b) in buf.iter().enumerate().skip(from) {
         match b {
-            b'\n' => return Some((data[..i].to_vec(), i + 1)),
+            b'\n' => {
+                return LineEnd::Complete {
+                    end: i,
+                    next: i + 1,
+                }
+            }
             b'\r' => {
-                if i + 1 < data.len() {
-                    if data[i + 1] == b'\n' {
-                        return Some((data[..i].to_vec(), i + 2));
-                    }
-                    return Some((data[..i].to_vec(), i + 1));
+                if i + 1 < buf.len() {
+                    let next = if buf[i + 1] == b'\n' { i + 2 } else { i + 1 };
+                    return LineEnd::Complete { end: i, next };
                 }
-                // Defer: we may be one byte short of distinguishing
-                // \r\n from lone \r.
-                if at_eof {
-                    return Some((data[..i].to_vec(), i + 1));
-                }
-                return None;
+                return LineEnd::Incomplete { resume: i };
             }
             _ => {}
         }
     }
-    if at_eof {
-        return Some((data.to_vec(), data.len()));
-    }
-    None
+    LineEnd::Incomplete { resume: buf.len() }
 }
 
 /// Separate an SSE `field: value` line. Per the spec, a single space
@@ -385,11 +414,48 @@ mod tests {
     #[test]
     fn frame_too_large_caps() {
         let mut huge = b"event: match\ndata: ".to_vec();
-        huge.extend(std::iter::repeat(b'a').take(MAX_SSE_FRAME_BYTES + 100));
+        huge.extend(std::iter::repeat(b'a').take(DEFAULT_MAX_FRAME_BYTES + 100));
         huge.extend_from_slice(b"\n\n");
         let mut s = Scanner::new();
         let err = s.feed(&huge).unwrap_err();
         assert!(matches!(err, ScanError::FrameTooLarge(_)));
+    }
+
+    #[test]
+    fn a_chosen_bound_admits_frames_past_the_default() {
+        let payload = "a".repeat(DEFAULT_MAX_FRAME_BYTES * 2);
+        let input = format!("event: batch\ndata: {payload}\n\n");
+        let mut s = Scanner::with_max_frame(DEFAULT_MAX_FRAME_BYTES * 4);
+        let mut out = Vec::new();
+        // In small chunks, as a body arrives, so the long line is
+        // assembled across many feeds.
+        for chunk in input.as_bytes().chunks(4096) {
+            out.extend(s.feed(chunk).unwrap());
+        }
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].data.len(), payload.len());
+
+        let mut small = Scanner::new();
+        assert!(matches!(
+            small.feed(input.as_bytes()),
+            Err(ScanError::FrameTooLarge(DEFAULT_MAX_FRAME_BYTES))
+        ));
+    }
+
+    #[test]
+    fn a_line_that_never_ends_is_bounded() {
+        // No line break ever arrives: the bound must fire on the
+        // unfinished line rather than buffering for ever.
+        let mut s = Scanner::with_max_frame(8 * 1024);
+        let chunk = [b'x'; 1024];
+        let mut failed = false;
+        for _ in 0..16 {
+            if s.feed(&chunk).is_err() {
+                failed = true;
+                break;
+            }
+        }
+        assert!(failed, "an unterminated line grew past the bound");
     }
 
     #[test]

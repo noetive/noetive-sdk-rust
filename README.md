@@ -1,11 +1,12 @@
 # Noetive Rust SDK
 
 Official Rust client for the [Noetive](https://noetive.io) platform.
-Today it exposes **Semantik** — a managed semantic broker where you
-publish messages tagged with embedding vectors, query them with SemQL,
-and subscribe to live match streams over Server-Sent Events.
-Additional services will land alongside `semantik` as the platform
-grows.
+
+- **`noetive::semantik`** — a managed semantic broker: publish messages
+  tagged with embedding vectors, query them with SemQL, and subscribe to
+  live match streams over Server-Sent Events.
+- **`noetive::bud`** — managed mail for agents: read a mailbox, wait for
+  what happens in it, and send. See [Bud](#bud) below.
 
 - **Async-first** on `tokio` + `reqwest` with HTTP/2 and `rustls`.
 - **Typed** request/response models, structured error enum.
@@ -31,7 +32,7 @@ the Noetive dashboard. Pass it explicitly or export it as an
 environment variable:
 
 ```bash
-export NOETIVE_KEY_SECRET=keyu_...
+export NOETIVE_KEY_SECRET=keya_...
 ```
 
 `health` and `lint` work without a key; `publish`, `search`, and
@@ -206,10 +207,10 @@ use noetive::semantik::{Client, NoRetry, TransientRetry};
 let c = Client::from_env()?;                                  // 5 retries → 6 total
 
 // Latency-sensitive callers:
-let c = Client::builder().api_key("keyu_…").retry(TransientRetry::new(1)).build()?;
+let c = Client::builder().api_key("keya_…").retry(TransientRetry::new(1)).build()?;
 
 // Strict one-shot:
-let c = Client::builder().api_key("keyu_…").retry(NoRetry).build()?;
+let c = Client::builder().api_key("keya_…").retry(NoRetry).build()?;
 ```
 
 Implement the `RetryPolicy` trait directly for fully custom behaviour
@@ -222,7 +223,7 @@ use std::time::Duration;
 use noetive::semantik::Client;
 
 let client = Client::builder()
-    .api_key("keyu_...")                                  // or rely on NOETIVE_KEY_SECRET
+    .api_key("keya_...")                                  // or rely on NOETIVE_KEY_SECRET
     .base_url("https://semantik.noetive.io")              // override for staging
     .connect_timeout(Duration::from_secs(10))             // TCP/TLS connect
     .read_timeout(Duration::from_secs(30))                // one-shot RPCs only
@@ -233,6 +234,69 @@ let client = Client::builder()
 
 `Client` is cheap to clone (`Arc` inside) and safe for concurrent
 use from any task.
+
+## Bud
+
+Find out who the agent is, then wait for mail and answer it. A refusal
+comes back as `Ok` with `error` set, carrying its code and what to do
+next; `Err` means the request got no answer.
+
+```rust
+use noetive::bud::{ById, Client, Me, SendInput, WaitInput, EVENT_RECEIVED, JOIN_NEW};
+
+async fn reply() -> Result<(), noetive::bud::Failure> {
+    let client = Client::from_env()?; // reads NOETIVE_KEY_SECRET
+    let me: Me = client.describe_me().await?.into()?;
+    println!("{} {:?}", me.agent, me.addresses);
+
+    let mut cursor = String::new();
+    loop {
+        let batch = client
+            .wait(WaitInput { cursor: cursor.clone(), ..WaitInput::default() })
+            .await?; // Err: the connection failed; nothing to branch on
+        if let Some(refusal) = batch.error {
+            eprintln!("{refusal}"); // code says what happened, hint what to do next
+            return Ok(());
+        }
+        cursor = batch.cursor; // an empty window is success: keep waiting from here
+
+        for event in batch.events {
+            if event.kind != EVENT_RECEIVED || me.addresses.contains(&event.data.from) {
+                continue; // only new mail, and never our own
+            }
+            let message = client
+                .describe_message(ById { id: event.message.clone(), ..ById::default() })
+                .await?;
+            let answerable = message
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.aligned && p.thread_join == JOIN_NEW);
+            if !answerable {
+                continue; // unverified, or a reply: read it, do not answer it
+            }
+            let sent = client
+                .send(SendInput {
+                    in_reply_to: event.message.clone(),
+                    text: "Got it, thanks.".into(),
+                    idempotency_key: format!("reply-{}", event.id), // a retried send goes out once
+                    ..SendInput::default()
+                })
+                .await?;
+            if let Some(refusal) = sent.error {
+                eprintln!("{refusal}"); // refused: the guard or limit says why
+            }
+        }
+    }
+}
+```
+
+
+A message's rendered text marks everything the sender wrote as data, not
+instructions; check `provenance` before acting on what it says. For a
+long-running consumer, `watch` holds one stream open instead of waiting
+window by window. `NOETIVE_BUD_BASE_URL` overrides the endpoint. See the
+`noetive::bud` module docs for every operation and the typed views
+`ReadOutput::into` decodes.
 
 ## Examples
 
@@ -246,11 +310,12 @@ Runnable in [`examples/`](examples/):
 - [`subscribe.rs`](examples/subscribe.rs) — live SSE match stream
 - [`errors.rs`](examples/errors.rs) — preflight vs wire error inspection
 - [`custom_retry.rs`](examples/custom_retry.rs) — custom RetryPolicy
+- [`bud_reply.rs`](examples/bud_reply.rs) — Bud: wait for mail and reply to verified senders
 
 ```bash
 cargo run --example health
-NOETIVE_KEY_SECRET=keyu_... cargo run --example publish_text
-NOETIVE_KEY_SECRET=keyu_... cargo run --example subscribe
+NOETIVE_KEY_SECRET=keya_... cargo run --example publish_text
+NOETIVE_KEY_SECRET=keya_... cargo run --example subscribe
 ```
 
 ## Development
@@ -262,9 +327,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo doc --no-deps --open
 
-# Integration tests hit https://semantik.noetive.io. Skipped when
+# Integration tests hit the live services. Skipped when
 # NOETIVE_KEY_SECRET is unset.
-NOETIVE_KEY_SECRET=keyu_... cargo test --test integration -- --nocapture
+NOETIVE_KEY_SECRET=keya_... cargo test --test integration -- --nocapture
+NOETIVE_KEY_SECRET=keya_... cargo test --test bud_integration -- --nocapture
 ```
 
 ## Security

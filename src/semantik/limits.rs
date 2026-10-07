@@ -44,10 +44,6 @@ pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 256;
 /// Semantik response.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
-/// Cap on a single SSE frame's accumulated `data` payload. Mirrors the
-/// Go SDK's `internal/sse.MaxFrameBytes`.
-pub(crate) const MAX_SSE_FRAME_BYTES: usize = 64 * 1024;
-
 /// Cap on error response bodies read for decoding. Larger error bodies
 /// are unusual; this prevents an unbounded read on a misbehaving proxy.
 pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;

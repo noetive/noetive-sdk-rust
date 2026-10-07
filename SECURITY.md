@@ -5,11 +5,12 @@
 This document covers vulnerabilities in the `noetive` crate source
 tree: the Rust modules under `src/`, their direct dependencies as
 pinned in `Cargo.toml`, and the example programs under `examples/`.
+It covers two clients: `noetive::semantik` and `noetive::bud`.
 
 Out of scope:
 
-- The Semantik service itself (different repository, different
-  operational boundary). Report service vulnerabilities through the
+- The Noetive services themselves, Semantik and Bud (different
+  repositories, different operational boundary). Report service vulnerabilities through the
   channels on <https://noetive.io>.
 - Issues in transitive dependencies that are not reachable from SDK
   code.
@@ -38,7 +39,8 @@ Report by **email** to <security@noetive.eu>, using subject line
 
 Include, where possible:
 
-- SDK version (`noetive::semantik::VERSION` or the `Cargo.toml` pin).
+- SDK version (`noetive::semantik::VERSION` or the `Cargo.toml` pin;
+  both clients ship in the same crate version).
 - Rust toolchain (`rustc --version`) and OS / architecture.
 - A minimal reproduction (a `wiremock` server is ideal for decoder
   or scanner bugs).
@@ -73,6 +75,15 @@ code.
   keys; it does not inspect the key's prefix or contents. Deeper
   validation is the server's job, and prefix-locking the client would
   break the moment Noetive introduces a new key family.
+  The `bud` client marks its credential sensitive the same way and
+  redacts it in `Debug`. On its default transport it never follows a
+  redirect, so a 3xx cannot carry the credential to a host the caller
+  did not name; the redirect is reported, naming that host, and never
+  retried. A transport supplied through `ClientBuilder::http_client`
+  keeps its own redirect policy: build it with
+  `reqwest::redirect::Policy::none()`. A `bud`
+  client built with `Client::forwarding` holds no key at all and sends
+  only the one given for each call.
 - **TLS.** The default `reqwest::Client` is built with
   `rustls-tls` (not OpenSSL). TLS verification is enabled by
   default; callers who need custom roots or a corporate proxy must
@@ -83,9 +94,13 @@ code.
   before decoding (`MAX_RESPONSE_BYTES` = 1 MiB,
   `MAX_ERROR_BODY_BYTES` = 64 KiB) so that a misbehaving server
   cannot exhaust client memory.
-- **SSE stream.** Per-frame `data` is capped at
-  `MAX_SSE_FRAME_BYTES` = 64 KiB. The `Content-Type` of
-  `/v1/subscribe` responses is validated to be `text/event-stream`
+  `bud` caps responses at 32 MiB, because a rendered conversation
+  is legitimately large.
+- **SSE stream.** Each frame is capped, including a line still being
+  read, so a server that never ends a line cannot grow the buffer
+  without limit: 64 KiB on `semantik`'s `/v1/subscribe`, 4 MiB on
+  `bud`'s `/v1/watch`, whose frames batch many events. The
+  `Content-Type` of both streams is validated to be `text/event-stream`
   before any body bytes are consumed. Bare `\r`, `\r\n` and `\n`
   line endings are all tolerated; unknown SSE directives (`id`,
   `retry`, ...) are silently ignored per the spec.
@@ -93,7 +108,7 @@ code.
   `Retry-After` (header) hints are clamped to one hour. A
   misconfigured or malicious server emitting `u32::MAX` ms (~49
   days) cannot park a retrying caller for weeks.
-- **Retry safety.** By default the SDK absorbs up to five transient
+- **Retry safety.** By default `semantik` absorbs up to five transient
   server hiccups per call. It honours the server's wait hint when
   one is offered and otherwise falls back to a bounded linear delay
   so a missing hint cannot turn a transient failure into a terminal
@@ -104,11 +119,17 @@ code.
   `ClientBuilder::retry(NoRetry)`. Publish without an
   `idempotency_key` is the caller's responsibility: pair every
   retry-eligible publish with a key so a retry cannot duplicate.
+  `bud` retries once, and only a connection that failed before any
+  response arrived; a refusal is returned to the caller, never
+  retried. A send or update is retried only when it carries an
+  `idempotency_key`, and no retry policy can widen that.
 - **Test coverage.** Wire tests in `tests/wire.rs` cover the
   HTTP-level contract using `wiremock`. The SSE scanner has
   property-style smoke tests for arbitrary byte input. Integration
-  tests in `tests/integration.rs` exercise the live endpoint when
-  `NOETIVE_KEY_SECRET` is set.
+  tests in `tests/integration.rs` and `tests/bud_integration.rs`
+  exercise the live endpoints when `NOETIVE_KEY_SECRET` is set. The
+  `bud` client is covered by `tests/bud_wire.rs`,
+  `tests/bud_watch.rs` and `tests/bud_contract.rs`.
 
 ## Hall of fame
 

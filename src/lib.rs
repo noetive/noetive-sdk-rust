@@ -1,12 +1,15 @@
 //! Official Rust SDK for the [Noetive](https://noetive.io) platform.
 //!
-//! Today this crate exposes [`semantik`] — a managed semantic broker
-//! where you publish messages tagged with embedding vectors, query them
-//! with SemQL, and subscribe to live match streams over Server-Sent
-//! Events. Additional services will land alongside `semantik` as the
-//! platform grows.
+//! Two services, one key (`NOETIVE_KEY_SECRET`):
 //!
-//! # Quick start
+//! - [`semantik`] — a managed semantic broker where you publish messages
+//!   tagged with embedding vectors, query them with SemQL, and subscribe to
+//!   live match streams over Server-Sent Events.
+//! - [`bud`] — managed mail for agents: read a mailbox, wait for what
+//!   happens in it, and send. A refusal comes back as a value on the
+//!   operation's output, carrying what to do next.
+//!
+//! # Quick start: Semantik
 //!
 //! ```no_run
 //! use noetive::semantik::{Client, PublishRequest, PublishItem, SearchRequest};
@@ -39,4 +42,7 @@
 //! # }
 //! ```
 
+pub mod bud;
 pub mod semantik;
+
+mod sse;

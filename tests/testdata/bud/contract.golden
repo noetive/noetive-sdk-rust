@@ -1,0 +1,144 @@
+bud/v1
+WaitInput
+  agent_part bool,omitempty
+  cursor string,omitempty
+  mailbox string
+  timeout_s number,omitempty
+  types []string,omitempty
+WaitOutput
+  cursor string
+  error object,omitempty
+  events []object,omitempty
+ReadInput
+  cursor string,omitempty
+  max_chars number,omitempty
+  ref string
+ReadOutput
+  content json,omitempty
+  cursor string,omitempty
+  error object,omitempty
+  kind string,omitempty
+  provenance object,omitempty
+  ref string,omitempty
+  text string,omitempty
+  truncated bool,omitempty
+  version string,omitempty
+PutInput
+  body json
+  idempotency_key string,omitempty
+  ref string
+  version string,omitempty
+PutOutput
+  created bool,omitempty
+  effects []object,omitempty
+  error object,omitempty
+  ref string,omitempty
+  version string,omitempty
+SendInput
+  agent json,omitempty
+  attach []string,omitempty
+  bcc []string,omitempty
+  cc []string,omitempty
+  from string,omitempty
+  html string,omitempty
+  idempotency_key string,omitempty
+  in_reply_to string,omitempty
+  on_behalf_of string,omitempty
+  reply_all bool,omitempty
+  subject string,omitempty
+  text string,omitempty
+  to []string
+SendOutput
+  error object,omitempty
+  message string,omitempty
+  reason string,omitempty
+  remaining map[string]number,omitempty
+  state string,omitempty
+  thread string,omitempty
+Error
+  code string
+  counter string,omitempty
+  current json,omitempty
+  field string,omitempty
+  guard string,omitempty
+  hint string,omitempty
+  message string
+  request_id string,omitempty
+  retry_after_ms number,omitempty
+  version string,omitempty
+Provenance
+  aligned bool
+  dkim string,omitempty
+  dmarc string,omitempty
+  folder string,omitempty
+  in_tenant bool
+  known bool
+  removed map[string]number,omitempty
+  spf string,omitempty
+  thread_join string,omitempty
+Effect
+  count number,omitempty
+  kind string
+  ref string,omitempty
+JournalEvent
+  actor object
+  corr string,omitempty
+  data object
+  id string
+  mailbox string
+  message string
+  seq number
+  tenant string
+  thread string
+  ts string
+  type string
+EventData
+  agent_part bool,omitempty
+  aligned bool,omitempty
+  counter string,omitempty
+  folder string,omitempty
+  from string,omitempty
+  guard string,omitempty
+  in_tenant bool,omitempty
+  known bool,omitempty
+  message_id string,omitempty
+  provider string,omitempty
+  reason string,omitempty
+  state string,omitempty
+  subject string,omitempty
+Actor
+  agent string
+  kind string
+Me
+  addresses []string,omitempty
+  agent string
+  granted []string,omitempty
+  kind string,omitempty
+  limits map[string]number,omitempty
+  mailbox string,omitempty
+  name string,omitempty
+  readable_mailboxes []string,omitempty
+  scopes []string,omitempty
+  sending object,omitempty
+  tenant string
+Listing
+  folder string
+  mailbox string
+  messages []object,omitempty
+Conversation
+  messages []object,omitempty
+  thread string
+Summary
+  aligned bool
+  attachments number,omitempty
+  date string
+  from string,omitempty
+  from_name string,omitempty
+  in_tenant bool
+  incomplete bool,omitempty
+  join string,omitempty
+  known bool
+  message string
+  subject string,omitempty
+  thread string,omitempty
+  unread bool,omitempty
