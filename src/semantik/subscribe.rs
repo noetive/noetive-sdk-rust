@@ -25,6 +25,13 @@ const PATH_SUBSCRIBE: &str = "/v1/subscribe";
 /// SDK applies no defaults — an unset targeting field fails preflight
 /// rather than silently routing the subscription at a shared namespace.
 ///
+/// `include_vector` is optional and fixed for the life of the stream:
+/// when `true`, every [`MatchEvent`] carries the message's stored
+/// embedding in [`MatchEvent::vector`] (roughly `dimensions` x 13 bytes
+/// of JSON per match). It is left out of the request body unless set. A
+/// stored vector is readable by anyone who can reach the namespace,
+/// exactly like content and metadata.
+///
 /// `group` is optional. Subscriptions on one account in one namespace
 /// that name the same group compete: a message matching several members
 /// goes only to the member it scores highest against (exact ties all
@@ -45,6 +52,7 @@ const PATH_SUBSCRIBE: &str = "/v1/subscribe";
 ///     model: "Qwen3-Embedding-4B".into(),
 ///     dimensions: 1024,
 ///     group: Some("pandemic-roles".into()),
+///     include_vector: false,
 /// };
 /// # let _ = req;
 /// ```
@@ -56,6 +64,9 @@ pub struct SubscribeRequest {
     pub dimensions: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Attach the stored embedding to every match; see the type docs.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub include_vector: bool,
 }
 
 impl SubscribeRequest {
@@ -95,6 +106,16 @@ pub struct MatchEvent {
     /// the same two members says their queries overlap.
     #[serde(default)]
     pub lead: Option<f32>,
+    /// Sequence number of the matched message, for recognising a message
+    /// you have already seen. Like `seq` on a publish response it is not
+    /// a namespace-wide ordering, and matches do not arrive in `seq`
+    /// order. `None` when the frame carries none.
+    #[serde(default)]
+    pub seq: Option<u64>,
+    /// The matched message's stored embedding. Present only when the
+    /// subscription was created with `include_vector`.
+    #[serde(default)]
+    pub vector: Option<Vec<f32>>,
 }
 
 /// Live SSE match stream. Implements
@@ -413,6 +434,7 @@ mod tests {
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,
             group: None,
+            include_vector: false,
         }
     }
 
@@ -500,6 +522,51 @@ mod tests {
         assert_eq!(uncontested.lead, None);
         let tie = decode_match(r#"{"message_id":"m","score":0.7,"lead":0}"#).unwrap();
         assert_eq!(tie.lead, Some(0.0));
+    }
+
+    // Subscribe bodies carry `include_vector` only when the caller asks
+    // for it, so default subscriptions send exactly what they did before.
+    #[test]
+    fn subscribe_request_include_vector_sent_only_when_set() {
+        let off = serde_json::to_value(valid_request()).unwrap();
+        assert!(off.get("include_vector").is_none());
+        let on = SubscribeRequest {
+            include_vector: true,
+            ..valid_request()
+        };
+        assert_eq!(serde_json::to_value(on).unwrap()["include_vector"], true);
+    }
+
+    // `seq` and `vector` are optional on a match frame: absent decodes to
+    // `None`, present decodes to the exact values.
+    #[test]
+    fn decode_match_event_seq_and_vector() {
+        let bare = decode_match(r#"{"message_id":"m","score":0.7}"#).unwrap();
+        assert_eq!((bare.seq, bare.vector), (None, None));
+        let full =
+            decode_match(r#"{"message_id":"m","score":0.7,"seq":42,"vector":[0.5,-2]}"#).unwrap();
+        assert_eq!(full.seq, Some(42));
+        assert_eq!(full.vector, Some(vec![0.5, -2.0]));
+    }
+
+    // The largest legal match frame must pass through the default SSE
+    // scanner and decode whole; a frame cap below it would turn a valid
+    // server event into a stream error. A published vector may carry any
+    // finite component, and magnitudes near 1e20 encode as 22-digit
+    // decimals, so the worst 4096-dim frame is about 94 KB.
+    #[test]
+    fn match_frame_with_4096_dim_vector_decodes_through_scanner() {
+        let vector = vec!["-123456790000000000000"; 4096];
+        let data = format!(
+            r#"{{"message_id":"m","score":0.7,"seq":7,"vector":[{}]}}"#,
+            vector.join(",")
+        );
+        assert!(data.len() > 90_000, "fixture should be the worst-case size");
+        let wire = format!("event: match\ndata: {data}\n\n");
+        let frames = Scanner::new().feed(wire.as_bytes()).unwrap();
+        assert_eq!(frames.len(), 1);
+        let m = decode_match(&frames[0].data).unwrap();
+        assert_eq!(m.vector.unwrap().len(), 4096);
     }
 
     #[test]

@@ -15,10 +15,12 @@
 //! peer that never sends a line break cannot grow the buffer without
 //! limit.
 
-/// The frame bound [`Scanner::new`] applies. 64 KiB is an order of
-/// magnitude larger than any Semantik event; a stream whose frames batch
-/// many events sets its own bound with [`Scanner::with_max_frame`].
-pub(crate) const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024;
+/// The frame bound [`Scanner::new`] applies. 128 KiB admits the largest
+/// Semantik event, a match frame carrying a 4096-dimension vector whose
+/// components encode at their longest (about 94 KB; a typical embedding is
+/// about 55 KB); a stream whose frames batch many events sets its own bound
+/// with [`Scanner::with_max_frame`].
+pub(crate) const DEFAULT_MAX_FRAME_BYTES: usize = 128 * 1024;
 
 /// One complete SSE event.
 #[derive(Debug, Default, PartialEq, Eq, Clone)]

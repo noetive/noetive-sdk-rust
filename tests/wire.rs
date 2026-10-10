@@ -37,6 +37,7 @@ fn search_req(query: &str) -> SearchRequest {
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
         limit: 0,
+        include_vector: false,
     }
 }
 
@@ -48,6 +49,7 @@ fn subscribe_req(query: &str) -> SubscribeRequest {
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
         group: None,
+        include_vector: false,
     }
 }
 
@@ -859,4 +861,125 @@ async fn fallback_backoff_observes_new_schedule() {
         elapsed <= expected_max,
         "elapsed {elapsed:?} > expected_max {expected_max:?} — schedule may have changed"
     );
+}
+
+/// `include_vector` must reach the server when set on a search, and
+/// must be absent from the body when not: the matcher only accepts the
+/// exact body, so a stray `"include_vector": false` fails the default
+/// request with a 404 from the mock.
+#[tokio::test]
+async fn search_sends_include_vector_only_when_set() {
+    let server = MockServer::start().await;
+    let target = serde_json::json!({
+        "query": "q", "namespace": "global",
+        "model": "Qwen3-Embedding-4B", "dimensions": 1024,
+    });
+    let mut with_flag = target.clone();
+    with_flag["include_vector"] = serde_json::json!(true);
+    for body in [target, with_flag] {
+        Mock::given(method("POST"))
+            .and(path("/v1/search"))
+            .and(body_json(body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+    }
+    let client = test_client(&server);
+    client.search(search_req("q")).await.expect("default body");
+    client
+        .search(SearchRequest {
+            include_vector: true,
+            ..search_req("q")
+        })
+        .await
+        .expect("include_vector body");
+}
+
+/// Same contract for subscribe: the flag is sent only when `true`.
+#[tokio::test]
+async fn subscribe_sends_include_vector_only_when_set() {
+    let server = MockServer::start().await;
+    let sse = "event: subscribed\ndata: {\"subscription_id\":\"s\"}\n\n";
+    let target = serde_json::json!({
+        "query": "q", "namespace": "global",
+        "model": "Qwen3-Embedding-4B", "dimensions": 1024,
+    });
+    let mut with_flag = target.clone();
+    with_flag["include_vector"] = serde_json::json!(true);
+    for body in [target, with_flag] {
+        Mock::given(method("POST"))
+            .and(path("/v1/subscribe"))
+            .and(body_json(body))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+            .mount(&server)
+            .await;
+    }
+    let client = test_client(&server);
+    client
+        .subscribe(subscribe_req("q"))
+        .await
+        .expect("default body");
+    client
+        .subscribe(SubscribeRequest {
+            include_vector: true,
+            ..subscribe_req("q")
+        })
+        .await
+        .expect("include_vector body");
+}
+
+/// A full vector search page (50 results at 4096 dimensions, roughly
+/// 2.7 MB) is legal and exceeds the old 1 MiB response cap; it must
+/// decode with every vector intact, and `truncated` must carry through.
+#[tokio::test]
+async fn search_decodes_full_vector_page_and_truncated_flag() {
+    let server = MockServer::start().await;
+    let vector: Vec<f32> = (0..4096).map(|i| -0.123456 + i as f32 * 1e-5).collect();
+    let results: Vec<_> = (0..50)
+        .map(|i| serde_json::json!({"message_id": format!("m{i}"), "score": 0.5, "vector": vector}))
+        .collect();
+    Mock::given(method("POST"))
+        .and(path("/v1/search"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"results": results, "truncated": true})),
+        )
+        .mount(&server)
+        .await;
+
+    let res = test_client(&server)
+        .search(SearchRequest {
+            include_vector: true,
+            ..search_req("q")
+        })
+        .await
+        .expect("search");
+    assert_eq!(res.results.len(), 50);
+    assert_eq!(res.results[49].vector.as_ref().map(Vec::len), Some(4096));
+    assert!(res.truncated);
+}
+
+/// `seq` and `vector` on a match frame survive the real stream path
+/// (HTTP body -> scanner -> decode), not just the decoder.
+#[tokio::test]
+async fn subscribe_match_carries_seq_and_vector() {
+    let server = MockServer::start().await;
+    let body = "event: subscribed\ndata: {\"subscription_id\":\"s\"}\n\n\
+                event: match\ndata: {\"message_id\":\"m1\",\"score\":0.9,\"seq\":7,\"vector\":[0.5,-1]}\n\n\
+                event: match\ndata: {\"message_id\":\"m2\",\"score\":0.8}\n\n";
+    Mock::given(method("POST"))
+        .and(path("/v1/subscribe"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+        .mount(&server)
+        .await;
+
+    let mut sub = test_client(&server)
+        .subscribe(subscribe_req("q"))
+        .await
+        .expect("subscribe");
+    let first = sub.next().await.unwrap().unwrap();
+    assert_eq!(first.seq, Some(7));
+    assert_eq!(first.vector, Some(vec![0.5, -1.0]));
+    let second = sub.next().await.unwrap().unwrap();
+    assert_eq!((second.seq, second.vector), (None, None));
 }

@@ -40,9 +40,10 @@ pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 256;
 
 /// Cap on response bodies read for decoding (errors and structured
 /// responses). Larger payloads are rejected as malformed without ever
-/// being buffered in full. 1 MiB comfortably covers every documented
-/// Semantik response.
-pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+/// being buffered in full. The server never sends more than 8 MiB in one
+/// response (a search page with vectors is cut at that size), so the cap
+/// sits just above it.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 9 * 1024 * 1024;
 
 /// Cap on error response bodies read for decoding. Larger error bodies
 /// are unusual; this prevents an unbounded read on a misbehaving proxy.

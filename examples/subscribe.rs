@@ -27,6 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,
             group: None,
+            include_vector: false,
         }),
     )
     .await??;

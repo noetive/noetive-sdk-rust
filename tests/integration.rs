@@ -111,6 +111,7 @@ fn search_req(query: impl Into<String>) -> SearchRequest {
         model: GLOBAL_MODEL.into(),
         dimensions: GLOBAL_DIMS,
         limit: 0,
+        include_vector: false,
     }
 }
 
@@ -122,6 +123,7 @@ fn subscribe_req(query: impl Into<String>) -> SubscribeRequest {
         model: GLOBAL_MODEL.into(),
         dimensions: GLOBAL_DIMS,
         group: None,
+        include_vector: false,
     }
 }
 

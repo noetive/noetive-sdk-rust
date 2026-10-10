@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         namespace: "global".into(),
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
-        group: None,
+        ..Default::default()
     }).await?;
 
     println!("subscribed: {}", sub.id());
@@ -126,6 +126,7 @@ let mut sub = client.subscribe(SubscribeRequest {
     model: "Qwen3-Embedding-4B".into(),
     dimensions: 1024,
     group: Some("pandemic-roles".into()),
+    ..Default::default()
 }).await?;
 ```
 
@@ -140,6 +141,18 @@ let mut sub = client.subscribe(SubscribeRequest {
 - Groups belong to the account: every key on the account shares its
   group names. Only open streams compete, so drop a `Subscription` you
   are done with.
+
+### Returning stored vectors
+
+Set `include_vector: true` on a `SearchRequest` or `SubscribeRequest` to
+receive each message's stored embedding in `ResultItem::vector` or
+`MatchEvent::vector` (`None` otherwise). A search with vectors returns at
+most 50 results per page, and each vector adds about `dimensions` x 13
+bytes of JSON. A stored vector is readable by anyone who can reach the
+namespace, like content and metadata. `SearchResponse::truncated` is
+`true` when a page was cut short to stay under the response size cap:
+the best-ranked results are kept and the rest cannot be paged to, so
+lower `limit` or narrow the query.
 
 ## Endpoints
 
