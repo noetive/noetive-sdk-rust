@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- 2. Real round trip ----------------------------------------
     let res = client
         .search(SearchRequest {
-            query: r#"MATCH DISTANCE("machine learning") WITHIN 0.4 LIMIT 5"#.into(),
+            query: r#"MATCH DISTANCE("machine learning") LIMIT 5"#.into(),
             namespace: "global".into(),
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,

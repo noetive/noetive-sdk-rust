@@ -47,6 +47,7 @@ fn subscribe_req(query: &str) -> SubscribeRequest {
         namespace: "global".into(),
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
+        group: None,
     }
 }
 

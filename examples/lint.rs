@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .read_timeout(Duration::from_secs(5))
         .build()?;
 
-    let query = r#"MATCH DISTANCE("climate change") WITHIN "#;
+    let query = r#"MATCH DISTANCE("climate change") "#;
     let res = client
         .lint(LintRequest {
             query: query.to_string(),

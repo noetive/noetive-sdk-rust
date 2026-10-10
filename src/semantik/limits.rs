@@ -53,3 +53,7 @@ pub(crate) const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 /// retrying caller for weeks; one hour is far longer than any
 /// legitimate transient-retry hint.
 pub(crate) const MAX_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Maximum length of a subscription `group` name. The name must also be
+/// made only of ASCII letters, digits, `-` and `_`.
+pub const MAX_GROUP_LEN: usize = 64;

@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the SDK applies no defaults. These are the global-namespace values.
     let res = client
         .search(SearchRequest {
-            query: r#"MATCH DISTANCE("machine learning research") WITHIN 0.4 LIMIT 10"#.into(),
+            query: r#"MATCH DISTANCE("machine learning research") LIMIT 10"#.into(),
             namespace: "global".into(),
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,

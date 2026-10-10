@@ -121,6 +121,7 @@ fn subscribe_req(query: impl Into<String>) -> SubscribeRequest {
         namespace: GLOBAL_NS.into(),
         model: GLOBAL_MODEL.into(),
         dimensions: GLOBAL_DIMS,
+        group: None,
     }
 }
 
@@ -171,7 +172,7 @@ async fn lint_accepts_valid_query() {
         "lint(valid)",
         live_client()
             .lint(LintRequest {
-                query: r#"MATCH DISTANCE("a") WITHIN 0.5"#.into(),
+                query: r#"MATCH DISTANCE("a")"#.into(),
                 cursor: 0,
             })
             .await,
@@ -398,7 +399,7 @@ async fn search_retrieves_published_and_respects_limit() {
     // Indexing lag can run seconds-to-minutes during degraded windows
     // (see the resilience reference), so the budget is generous; a
     // failure here is far more likely server-side lag than an SDK bug.
-    let query = format!(r#"MATCH DISTANCE("{phrase}") WITHIN 0.5 LIMIT 5"#);
+    let query = format!(r#"MATCH DISTANCE("{phrase}") LIMIT 5"#);
     let res = search_until_nonempty(&client, &query, Duration::from_secs(60)).await;
     let ids: Vec<&str> = res.results.iter().map(|r| r.message_id.as_str()).collect();
 
@@ -425,7 +426,7 @@ async fn search_retrieves_published_and_respects_limit() {
     // after confirming non-empty tests both bounds at once.
     let limited = search_until_nonempty(
         &client,
-        &format!(r#"MATCH DISTANCE("{phrase}") WITHIN 0.5 LIMIT 1"#),
+        &format!(r#"MATCH DISTANCE("{phrase}") LIMIT 1"#),
         Duration::from_secs(30),
     )
     .await;
@@ -479,7 +480,7 @@ async fn subscribe_handshake_completes() {
     skip_unless_key!();
     let sub = open_subscription(
         &live_client(),
-        r#"MATCH DISTANCE("integration handshake marker") WITHIN 0.5"#,
+        r#"MATCH DISTANCE("integration handshake marker")"#,
     )
     .await;
     assert!(!sub.id().is_empty(), "subscription_id should be non-empty");
@@ -497,11 +498,7 @@ async fn subscribe_round_trip_delivers_match() {
     let phrase = format!("rust sdk subscribe round trip marker {id}");
 
     // Subscribe first so the publish that follows is delivered live.
-    let mut sub = open_subscription(
-        &client,
-        &format!(r#"MATCH DISTANCE("{phrase}") WITHIN 0.5"#),
-    )
-    .await;
+    let mut sub = open_subscription(&client, &format!(r#"MATCH DISTANCE("{phrase}")"#)).await;
     // Give the subscription a moment to become active server-side.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -535,11 +532,7 @@ async fn subscribe_delivers_all_published_without_drops() {
     let id = run_id();
     let phrase = format!("rust sdk subscribe multi marker {id}");
 
-    let mut sub = open_subscription(
-        &client,
-        &format!(r#"MATCH DISTANCE("{phrase}") WITHIN 0.5"#),
-    )
-    .await;
+    let mut sub = open_subscription(&client, &format!(r#"MATCH DISTANCE("{phrase}")"#)).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Publish three identical-text messages with distinct idempotency
@@ -583,16 +576,11 @@ async fn subscribe_drop_releases_and_client_remains_usable() {
     // still usable for a fresh handshake afterwards — rather than the
     // teardown itself.
     {
-        let sub =
-            open_subscription(&client, r#"MATCH DISTANCE("drop test marker") WITHIN 0.5"#).await;
+        let sub = open_subscription(&client, r#"MATCH DISTANCE("drop test marker")"#).await;
         assert!(!sub.id().is_empty());
     } // sub dropped here
 
-    let sub2 = open_subscription(
-        &client,
-        r#"MATCH DISTANCE("drop test marker two") WITHIN 0.5"#,
-    )
-    .await;
+    let sub2 = open_subscription(&client, r#"MATCH DISTANCE("drop test marker two")"#).await;
     assert!(
         !sub2.id().is_empty(),
         "client should remain usable after a subscription is dropped"
@@ -611,7 +599,7 @@ async fn subscribe_next_poll_cancels_cleanly() {
     let id = run_id();
     let mut sub = open_subscription(
         &live_client(),
-        &format!(r#"MATCH DISTANCE("rust sdk no match cancellation marker {id}") WITHIN 0.1"#),
+        &format!(r#"MATCH DISTANCE("rust sdk no match cancellation marker {id}")"#),
     )
     .await;
 

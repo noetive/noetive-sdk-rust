@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }).await?;
 
     let res = client.search(SearchRequest {
-        query: r#"MATCH DISTANCE("machine learning") WITHIN 0.4 LIMIT 10"#.into(),
+        query: r#"MATCH DISTANCE("machine learning") LIMIT 10"#.into(),
         namespace: "global".into(),
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
@@ -91,10 +91,11 @@ use noetive::semantik::{Client, SubscribeRequest};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::from_env()?;
     let mut sub = client.subscribe(SubscribeRequest {
-        query: r#"MATCH DISTANCE("open-source model releases") WITHIN 0.5"#.into(),
+        query: r#"MATCH DISTANCE("open-source model releases")"#.into(),
         namespace: "global".into(),
         model: "Qwen3-Embedding-4B".into(),
         dimensions: 1024,
+        group: None,
     }).await?;
 
     println!("subscribed: {}", sub.id());
@@ -109,6 +110,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Message groups
+
+By default every subscription receives every message it matches. When
+several subscriptions split one stream, such as the roles of a
+multi-agent system, give them the same `group` so each message has one
+owner: a message matching several members goes only to the member it
+scores highest against, and exact ties all receive it.
+
+```rust
+let mut sub = client.subscribe(SubscribeRequest {
+    query: r#"MATCH DISTANCE("hospital reports a shortage of ICU beds or staff") OR DISTANCE("Coordinates hospital capacity: beds, ICU, ventilators and clinical staffing.")"#.into(),
+    namespace: "global".into(),
+    model: "Qwen3-Embedding-4B".into(),
+    dimensions: 1024,
+    group: Some("pandemic-roles".into()),
+}).await?;
+```
+
+- A group name is 1 to 64 ASCII letters, digits, `-` or `_`; anything
+  else fails preflight.
+- Members must match on the same clause kinds (`DISTANCE`, `DIRECTION`,
+  `CONTRAST`) and, for `DISTANCE`, the same metric, or the server
+  refuses the subscription with `400 invalid_request`.
+- A grouped `MatchEvent` carries `lead: Some(margin)` when another member
+  also matched: this score minus the best other member's. `Some(0.0)` is
+  a tie; `None` means no other member competed.
+- Groups belong to the account: every key on the account shares its
+  group names. Only open streams compete, so drop a `Subscription` you
+  are done with.
 
 ## Endpoints
 

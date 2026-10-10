@@ -22,10 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(10),
         // namespace, model, and dimensions are required — no defaults.
         client.subscribe(SubscribeRequest {
-            query: r#"MATCH DISTANCE("gpu shortage") WITHIN 0.5"#.into(),
+            query: r#"MATCH DISTANCE("gpu shortage")"#.into(),
             namespace: "global".into(),
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,
+            group: None,
         }),
     )
     .await??;

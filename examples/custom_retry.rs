@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let res = client
         .search(SearchRequest {
-            query: r#"MATCH DISTANCE("rust") WITHIN 0.4 LIMIT 3"#.into(),
+            query: r#"MATCH DISTANCE("rust") LIMIT 3"#.into(),
             namespace: "global".into(),
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,

@@ -28,7 +28,7 @@
 //! }).await?;
 //!
 //! let results = client.search(SearchRequest {
-//!     query: "MATCH DISTANCE(\"machine learning\") WITHIN 0.4 LIMIT 10".into(),
+//!     query: "MATCH DISTANCE(\"machine learning\") LIMIT 10".into(),
 //!     namespace: "global".into(),
 //!     model: "Qwen3-Embedding-4B".into(),
 //!     dimensions: 1024,

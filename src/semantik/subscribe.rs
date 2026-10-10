@@ -13,7 +13,7 @@ use crate::semantik::error::{decode_error_response, Error};
 use crate::semantik::transport::{
     request_id_from_headers, run_with_retry, send_raw, AuthMode, MIME_JSON, MIME_SSE,
 };
-use crate::semantik::validate::validate_target;
+use crate::semantik::validate::{validate_group, validate_target};
 use crate::sse::{Frame, ScanError, Scanner};
 
 const PATH_SUBSCRIBE: &str = "/v1/subscribe";
@@ -24,12 +24,38 @@ const PATH_SUBSCRIBE: &str = "/v1/subscribe";
 /// `query`, `namespace`, `model`, and `dimensions` must all be set. The
 /// SDK applies no defaults — an unset targeting field fails preflight
 /// rather than silently routing the subscription at a shared namespace.
+///
+/// `group` is optional. Subscriptions on one account in one namespace
+/// that name the same group compete: a message matching several members
+/// goes only to the member it scores highest against (exact ties all
+/// receive it), and grouped [`MatchEvent`]s carry [`MatchEvent::lead`].
+/// Use it when several subscriptions split one stream, such as agent
+/// roles. Members must match on the same clause kinds, and `DISTANCE`
+/// members on the same metric, or the server refuses the subscription
+/// with `400 invalid_request`. The name is 1 to
+/// [`MAX_GROUP_LEN`](crate::semantik::MAX_GROUP_LEN) ASCII letters,
+/// digits, `-` or `_`, checked at preflight.
+///
+/// ```
+/// use noetive::semantik::SubscribeRequest;
+///
+/// let req = SubscribeRequest {
+///     query: r#"MATCH DISTANCE("ICU beds are running out")"#.into(),
+///     namespace: "global".into(),
+///     model: "Qwen3-Embedding-4B".into(),
+///     dimensions: 1024,
+///     group: Some("pandemic-roles".into()),
+/// };
+/// # let _ = req;
+/// ```
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SubscribeRequest {
     pub query: String,
     pub namespace: String,
     pub model: String,
     pub dimensions: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl SubscribeRequest {
@@ -37,7 +63,11 @@ impl SubscribeRequest {
         if self.query.is_empty() {
             return Err(Error::preflight("subscribe query must not be empty"));
         }
-        validate_target(&self.namespace, &self.model, self.dimensions)
+        validate_target(&self.namespace, &self.model, self.dimensions)?;
+        match &self.group {
+            Some(name) => validate_group(name),
+            None => Ok(()),
+        }
     }
 }
 
@@ -58,6 +88,13 @@ pub struct MatchEvent {
     pub message_id: String,
     #[serde(default)]
     pub score: f32,
+    /// Set only for a subscription in a `group` when another member also
+    /// matched: this score minus the best score among those members.
+    /// `Some(0.0)` is a tie; `None` means no other member competed (or
+    /// the subscription is ungrouped). A consistently small lead between
+    /// the same two members says their queries overlap.
+    #[serde(default)]
+    pub lead: Option<f32>,
 }
 
 /// Live SSE match stream. Implements
@@ -375,6 +412,7 @@ mod tests {
             namespace: "global".into(),
             model: "Qwen3-Embedding-4B".into(),
             dimensions: 1024,
+            group: None,
         }
     }
 
@@ -420,6 +458,48 @@ mod tests {
         let m = decode_match(r#"{"message_id":"abc","score":0.42}"#).unwrap();
         assert_eq!(m.message_id, "abc");
         assert!((m.score - 0.42).abs() < 1e-6);
+    }
+
+    // A group name the server would refuse must fail before the network
+    // call, so a typo surfaces as a preflight error rather than a 400
+    // after the retry loop. Covers empty, too long, and outside the
+    // alphabet, plus the 64-character boundary that must still pass.
+    #[test]
+    fn subscribe_validate_group_name_rule() {
+        let with = |g: &str| SubscribeRequest {
+            group: Some(g.into()),
+            ..valid_request()
+        };
+        assert!(with("pandemic-roles_2").validate().is_ok());
+        assert!(with(&"a".repeat(64)).validate().is_ok());
+        for bad in ["", &"a".repeat(65), "two words", "rôle", "a/b"] {
+            let err = with(bad).validate().unwrap_err();
+            assert!(err.is_preflight(), "{bad:?} should fail preflight");
+        }
+    }
+
+    // An ungrouped request must serialize without a `group` key: the
+    // server rejects unknown or null-valued surprises strictly, and an
+    // omitted group is what keeps a subscription receiving every match.
+    #[test]
+    fn subscribe_request_omits_group_when_unset() {
+        let body = serde_json::to_value(valid_request()).unwrap();
+        assert!(body.get("group").is_none());
+        let grouped = SubscribeRequest {
+            group: Some("roles".into()),
+            ..valid_request()
+        };
+        assert_eq!(serde_json::to_value(grouped).unwrap()["group"], "roles");
+    }
+
+    // `lead` distinguishes "no competitor" (absent) from "tie" (0), so
+    // it must decode as an Option rather than defaulting to 0.0.
+    #[test]
+    fn decode_match_event_lead_absent_vs_tie() {
+        let uncontested = decode_match(r#"{"message_id":"m","score":0.7}"#).unwrap();
+        assert_eq!(uncontested.lead, None);
+        let tie = decode_match(r#"{"message_id":"m","score":0.7,"lead":0}"#).unwrap();
+        assert_eq!(tie.lead, Some(0.0));
     }
 
     #[test]

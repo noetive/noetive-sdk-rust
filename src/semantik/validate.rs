@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use crate::semantik::error::Error;
 use crate::semantik::limits::{
-    MAX_METADATA_KEYS, MAX_METADATA_KEY_LEN, MAX_METADATA_TOTAL_BYTES, MAX_METADATA_VALUE_LEN,
-    MAX_TEXT_BYTES, MAX_VECTOR_DIM,
+    MAX_GROUP_LEN, MAX_METADATA_KEYS, MAX_METADATA_KEY_LEN, MAX_METADATA_TOTAL_BYTES,
+    MAX_METADATA_VALUE_LEN, MAX_TEXT_BYTES, MAX_VECTOR_DIM,
 };
 
 /// Non-empty check on an API key. The SDK does not inspect key format
@@ -39,6 +39,28 @@ pub(crate) fn validate_target(namespace: &str, model: &str, dimensions: u16) -> 
         return Err(Error::preflight("model must not be empty"));
     }
     validate_dimensions(dimensions)
+}
+
+/// Enforce the subscription `group` name rule the server applies: 1 to
+/// [`MAX_GROUP_LEN`] ASCII letters, digits, `-` or `_`. An empty name is
+/// refused rather than sent as "no group", so `Some(String::new())` is a
+/// caller bug, not a way to opt out.
+pub(crate) fn validate_group(name: &str) -> Result<(), Error> {
+    if name.is_empty() || name.len() > MAX_GROUP_LEN {
+        return Err(Error::preflight(format!(
+            "group must be 1 to {MAX_GROUP_LEN} characters, got {}",
+            name.len()
+        )));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(Error::preflight(
+            "group must contain only ASCII letters, digits, '-' or '_'",
+        ));
+    }
+    Ok(())
 }
 
 /// Enforce `1 <= dim <= MAX_VECTOR_DIM`.
