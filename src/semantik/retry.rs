@@ -43,6 +43,12 @@ impl RetryPolicy for NoRetry {
 /// - [`ErrorCode::NamespaceUnavailable`]
 /// - [`ErrorCode::MeteringUnavailable`]
 ///
+/// [`ErrorCode::ModelNotProvisioned`] is retried only when the server
+/// sends a retry hint. The code is returned both for a namespace that
+/// will never carry the requested `(model, dimensions)` pair and for
+/// one that is provisioned but not yet ready to serve; the hint is what
+/// separates the waitable case from the permanent one.
+///
 /// The server's retry hint ([`Error::retry_after`]) is honoured when
 /// present; when the hint is missing the SDK falls back to a
 /// `100ms, 2s, 5s, 10s` schedule, saturating at 10s for later attempts.
@@ -108,6 +114,21 @@ impl RetryPolicy for TransientRetry {
                 // truncated body dropped it.
                 Some(retry_after.unwrap_or_else(|| fallback_backoff(attempt)))
             }
+            ErrorCode::ModelNotProvisioned => {
+                // One code covers two conditions the client cannot tell
+                // apart: a namespace that will never carry this
+                // (model, dimensions) pair, and one that is provisioned
+                // but not yet ready to serve. The server distinguishes
+                // them by sending a retry hint on the second, so the
+                // hint — not the code — decides. Absent a hint the pair
+                // is treated as permanently unsatisfiable and fails
+                // fast, because waiting cannot conjure a pairing that
+                // was never provisioned.
+                //
+                // No fallback_backoff here: unlike the transient codes
+                // above, a missing hint is meaningful rather than lost.
+                *retry_after
+            }
             _ => None,
         }
     }
@@ -161,7 +182,6 @@ mod tests {
             ErrorCode::RateLimited,
             ErrorCode::TooManyRequests,
             ErrorCode::RequestTooLarge,
-            ErrorCode::ModelNotProvisioned,
         ] {
             let err = api_err(code.clone(), None);
             assert!(
@@ -169,6 +189,66 @@ mod tests {
                 "code {code:?} should NOT retry"
             );
         }
+    }
+
+    // model_not_provisioned is returned both while a pairing is still
+    // becoming ready and for one that will never exist. The retry hint
+    // is the only thing separating them, so pin both sides of the gate.
+
+    #[test]
+    fn model_not_provisioned_without_hint_is_terminal() {
+        let policy = TransientRetry::new(5);
+        let err = api_err(ErrorCode::ModelNotProvisioned, None);
+        assert!(
+            policy.should_retry(0, &err).is_none(),
+            "no hint means the pairing will not appear on its own"
+        );
+    }
+
+    #[test]
+    fn model_not_provisioned_with_hint_retries_at_hint() {
+        let policy = TransientRetry::new(5);
+        let hint = Duration::from_millis(2000);
+        let err = api_err(ErrorCode::ModelNotProvisioned, Some(hint));
+        assert_eq!(
+            policy.should_retry(0, &err),
+            Some(hint),
+            "a hinted pairing is still becoming ready; honour the server's number"
+        );
+    }
+
+    #[test]
+    fn model_not_provisioned_with_hint_never_falls_back_to_schedule() {
+        // The fallback schedule would mask a missing hint as a retry.
+        // Later attempts must keep using the hint, not drift onto the
+        // backoff table.
+        let policy = TransientRetry::new(5);
+        let hint = Duration::from_millis(2000);
+        let err = api_err(ErrorCode::ModelNotProvisioned, Some(hint));
+        assert_eq!(policy.should_retry(3, &err), Some(hint));
+    }
+
+    #[test]
+    fn model_not_provisioned_with_hint_still_respects_max_attempts() {
+        let policy = TransientRetry::new(2);
+        let err = api_err(
+            ErrorCode::ModelNotProvisioned,
+            Some(Duration::from_millis(500)),
+        );
+        assert!(policy.should_retry(1, &err).is_some());
+        assert!(
+            policy.should_retry(2, &err).is_none(),
+            "hint does not mean unbounded"
+        );
+    }
+
+    #[test]
+    fn terminal_code_with_stray_hint_stays_terminal() {
+        // Only model_not_provisioned opts into hint-gated retry; a hint
+        // on a genuinely terminal code must not make it retriable.
+        let policy = TransientRetry::new(5);
+        let err = api_err(ErrorCode::NotBillable, Some(Duration::from_millis(500)));
+        assert!(policy.should_retry(0, &err).is_none());
     }
 
     #[test]
