@@ -1,5 +1,5 @@
-//! Client for Noetive Bud, managed mail for agents: read a mailbox, wait
-//! for what happens in it, and send.
+//! Client for Noetive Bud, email for AI agents: read a mailbox, wait for what
+//! happens in it, and send within limits the agent can read but not raise.
 //!
 //! # Quick start
 //!

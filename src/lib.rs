@@ -5,8 +5,9 @@
 //! - [`semantik`] — a managed semantic broker where you publish messages
 //!   tagged with embedding vectors, query them with SemQL, and subscribe to
 //!   live match streams over Server-Sent Events.
-//! - [`bud`] — managed mail for agents: read a mailbox, wait for what
-//!   happens in it, and send. A refusal comes back as a value on the
+//! - [`bud`]: email for AI agents. Read a mailbox, wait for what
+//!   happens in it, and send within limits the agent can read but not raise.
+//!   A refusal comes back as a value on the
 //!   operation's output, carrying what to do next.
 //!
 //! # Quick start: Semantik

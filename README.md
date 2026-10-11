@@ -5,8 +5,9 @@ Official Rust client for the [Noetive](https://noetive.io) platform.
 - **`noetive::semantik`** — a managed semantic broker: publish messages
   tagged with embedding vectors, query them with SemQL, and subscribe to
   live match streams over Server-Sent Events.
-- **`noetive::bud`** — managed mail for agents: read a mailbox, wait for
-  what happens in it, and send. See [Bud](#bud) below.
+- **`noetive::bud`**: email for AI agents. Read a mailbox, wait for
+  what happens in it, and send within limits the agent can read but not
+  raise. See [Bud](#bud) below.
 
 - **Async-first** on `tokio` + `reqwest` with HTTP/2 and `rustls`.
 - **Typed** request/response models, structured error enum.
