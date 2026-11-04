@@ -181,7 +181,7 @@ pub struct Provenance {
     /// agree. SPF passing alone says only that somebody was allowed to send
     /// from that server.
     pub aligned: bool,
-    pub in_tenant: bool,
+    pub in_workspace: bool,
     pub known: bool,
 
     /// How the message joined its conversation: `JOIN_NEW`,
@@ -263,8 +263,12 @@ pub struct SendInput {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub from: String,
 
-    /// Writes as another agent. It needs a grant, and the server refuses
-    /// it: nothing there can confirm a person decided that message.
+    /// Writes as another agent. It needs a send-on-behalf grant from that
+    /// agent's owner, the organization's permission to send on behalf, and
+    /// a `from` domain verified for the workspace; without all three the
+    /// send is refused as `policy_refused`. The message names both, with
+    /// the sending agent as Sender, so a recipient sees who wrote it and
+    /// who it is from.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub on_behalf_of: String,
 
@@ -294,7 +298,8 @@ pub struct SendInput {
 
 /// What a send returns.
 ///
-/// A new send is `STATE_QUEUED`; a repeat with the same idempotency key
+/// A new send is `STATE_QUEUED`, or `STATE_HELD` with an `approval_id` when
+/// a person has to approve it first; a repeat with the same idempotency key
 /// reports the message's state now.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -305,6 +310,12 @@ pub struct SendOutput {
     pub thread: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub state: String,
+    /// The approval a `STATE_HELD` message waits on. Absent until the
+    /// request for approval has been filed, which happens in the
+    /// background; the message is held either way, and only a person can
+    /// release it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub approval_id: String,
     /// Why a queued message waits instead of going now — "provisioning"
     /// while the sender's domain is verified, or "paused" — and, on a repeat
     /// for a message that failed, why it failed.
@@ -380,7 +391,7 @@ impl WaitOutput {
 pub struct JournalEvent {
     /// Dedupe on this: delivery is at least once.
     pub id: String,
-    pub tenant: String,
+    pub workspace: String,
     /// When, RFC 3339.
     #[serde(rename = "ts")]
     pub at: String,
@@ -424,7 +435,7 @@ pub struct EventData {
     #[serde(skip_serializing_if = "is_false")]
     pub aligned: bool,
     #[serde(skip_serializing_if = "is_false")]
-    pub in_tenant: bool,
+    pub in_workspace: bool,
     #[serde(skip_serializing_if = "is_false")]
     pub known: bool,
     #[serde(skip_serializing_if = "is_false")]
@@ -454,7 +465,7 @@ pub struct EventData {
 #[serde(default)]
 pub struct Me {
     pub agent: String,
-    pub tenant: String,
+    pub workspace: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub kind: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -515,7 +526,7 @@ pub struct Summary {
     pub from_name: String,
     /// The provenance to triage on without opening anything.
     pub aligned: bool,
-    pub in_tenant: bool,
+    pub in_workspace: bool,
     pub known: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub join: String,
@@ -547,6 +558,9 @@ pub struct SendingStatus {
 #[serde(default)]
 pub struct MailboxView {
     pub mailbox: String,
+    /// What this mailbox sends as. The first is the default.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
     /// An operator stopped this mailbox sending; `reason` says why.
     #[serde(skip_serializing_if = "is_false")]
     pub paused: bool,
@@ -661,7 +675,7 @@ pub struct PartInfo {
 pub struct Health {
     pub contract: String,
     pub agent: String,
-    pub tenant: String,
+    pub workspace: String,
     /// A refusal: a key that reaches no agent here is forbidden_scope, an
     /// account that cannot be charged is not_billable. Either way the key
     /// itself works; only unauthorized means it does not.

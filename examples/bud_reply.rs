@@ -3,10 +3,10 @@
 //!     NOETIVE_KEY_SECRET=keya_... cargo run --example bud_reply
 //!
 //! Answers only new conversations from senders the service could verify,
-//! never its own mail, and reports a refused send. Each reply carries an
+//! never its own mail, and reports a refused or held send. Each reply carries an
 //! idempotency key, so a retried send goes out once.
 
-use noetive::bud::{ById, Client, Me, SendInput, WaitInput, EVENT_RECEIVED, JOIN_NEW};
+use noetive::bud::{ById, Client, Me, SendInput, WaitInput, EVENT_RECEIVED, JOIN_NEW, STATE_HELD};
 
 #[tokio::main]
 async fn main() -> Result<(), noetive::bud::Failure> {
@@ -57,6 +57,8 @@ async fn main() -> Result<(), noetive::bud::Failure> {
                 .await?;
             if let Some(refusal) = sent.error {
                 eprintln!("{refusal}"); // refused: the guard or limit says why
+            } else if sent.state == STATE_HELD {
+                eprintln!("held for {}", sent.approval_id); // a person decides; do not resend
             }
         }
     }

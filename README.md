@@ -287,7 +287,9 @@ comes back as `Ok` with `error` set, carrying its code and what to do
 next; `Err` means the request got no answer.
 
 ```rust
-use noetive::bud::{ById, Client, Me, SendInput, WaitInput, EVENT_RECEIVED, JOIN_NEW};
+use noetive::bud::{
+    ById, Client, Me, SendInput, WaitInput, EVENT_RECEIVED, JOIN_NEW, STATE_HELD,
+};
 
 async fn reply() -> Result<(), noetive::bud::Failure> {
     let client = Client::from_env()?; // reads NOETIVE_KEY_SECRET
@@ -329,6 +331,8 @@ async fn reply() -> Result<(), noetive::bud::Failure> {
                 .await?;
             if let Some(refusal) = sent.error {
                 eprintln!("{refusal}"); // refused: the guard or limit says why
+            } else if sent.state == STATE_HELD {
+                eprintln!("held for {}", sent.approval_id); // a person decides; do not resend
             }
         }
     }

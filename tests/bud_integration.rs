@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 use noetive::bud::{
     ById, Change, Client, Code, Conversation, Correspondents, Error, In, Listing, MailboxView, Me,
     PartInfo, PartMap, PartView, SendInput, Summary, WaitInput, CONTRACT_VERSION, FOLDER_INBOX,
-    FOLDER_QUARANTINE, FOLDER_SENT, PART_MODE_BYTES, PREFIX_AGENT, PREFIX_MESSAGE, RENDER_PARTS,
-    SENDING_PAUSED, SENDING_PROVISIONING, SENDING_READY,
+    FOLDER_QUARANTINE, FOLDER_SENT, PART_MODE_BYTES, PREFIX_AGENT, PREFIX_MESSAGE,
+    PREFIX_WORKSPACE, RENDER_PARTS, SENDING_PAUSED, SENDING_PROVISIONING, SENDING_READY,
 };
 
 /// The production endpoint. Not overridable; see the module doc.
@@ -144,9 +144,16 @@ async fn health_names_the_agent() {
         h.contract, CONTRACT_VERSION,
         "the contract this client implements"
     );
+    // Both empty would also be equal, which is what a client reading a field
+    // the server renamed sees, so the workspace has to be there at all.
+    assert!(
+        h.workspace.starts_with(PREFIX_WORKSPACE),
+        "health names workspace {:?}, want a {PREFIX_WORKSPACE} identifier",
+        h.workspace
+    );
     assert_eq!(
-        (h.agent.as_str(), h.tenant.as_str()),
-        (me.agent.as_str(), me.tenant.as_str())
+        (h.agent.as_str(), h.workspace.as_str()),
+        (me.agent.as_str(), me.workspace.as_str())
     );
 }
 

@@ -24,12 +24,24 @@ pub enum Code {
     /// The key is good and the account behind it cannot be charged (402).
     /// Retrying will not help until billing is set up.
     NotBillable,
+    /// A spend cap on the organization, workspace or agent has been reached
+    /// (402). The payment method is not the problem: a person raises the
+    /// cap, or its period ends.
+    SpendCapReached,
     /// The key is good and does not reach what was asked: its agent is
-    /// disabled or not on this service, or it may not watch the mailbox or
-    /// send as the sender it named. Never returned for an object the caller
-    /// cannot read — that is [`Code::NotFound`], because saying "forbidden"
-    /// about an identifier confirms it exists.
+    /// disabled, its account is not active, or it may not watch the
+    /// mailbox, send, or send as the sender it named. Never returned for an
+    /// object the caller cannot read — that is [`Code::NotFound`], because
+    /// saying "forbidden" about an identifier confirms it exists.
     ForbiddenScope,
+    /// The access token acts for a person rather than for the agent, and no
+    /// operation accepts that yet (403). A token minted for the agent
+    /// itself is what works.
+    ImpersonationNotSupported,
+    /// A person has to approve this action before it can happen, and the
+    /// operation cannot wait for one (403). A send is never refused with
+    /// this: it comes back `STATE_HELD` instead.
+    ApprovalRequired,
     /// The object does not exist, exists outside every grant the caller
     /// holds, or the operation does not exist.
     NotFound,
@@ -44,6 +56,11 @@ pub enum Code {
     /// [`Error::retry_after`] says when it clears. With no wait, waiting
     /// will not help and the request has to change.
     RateLimited,
+    /// A usage quota for the period is used up (429). Waiting seconds does
+    /// not help: [`Error::counter`] names the quota and
+    /// [`Error::retry_after`] says when its window refills, which can be
+    /// the rest of the period.
+    QuotaExceeded,
     /// The mailbox is paused and is not sending. Unlike a rate limit it does
     /// not clear on its own. Shares 409 with [`Code::PreconditionFailed`],
     /// so branch on the code.
@@ -62,6 +79,9 @@ pub enum Code {
     /// Something bud depends on could not be reached, and the request had
     /// no effect (503). Retry with backoff.
     UpstreamUnavailable,
+    /// The policy that governs this caller could not be applied, so nothing
+    /// was done (503). Retry with backoff.
+    PolicyUnavailable,
     /// This crate's own: the server answered with something that is not
     /// the envelope. Distinct from [`Code::Internal`] so a caller can tell
     /// "the server failed" from "we could not read what it said".
@@ -76,6 +96,11 @@ impl Code {
         match self {
             Self::Unauthorized => "unauthorized",
             Self::NotBillable => "not_billable",
+            Self::SpendCapReached => "spend_cap_reached",
+            Self::ImpersonationNotSupported => "impersonation_not_supported",
+            Self::ApprovalRequired => "approval_required",
+            Self::QuotaExceeded => "quota_exceeded",
+            Self::PolicyUnavailable => "policy_unavailable",
             Self::ForbiddenScope => "forbidden_scope",
             Self::NotFound => "not_found",
             Self::PreconditionFailed => "precondition_failed",
@@ -97,6 +122,11 @@ impl Code {
             "unauthorized" => Self::Unauthorized,
             "not_billable" => Self::NotBillable,
             "forbidden_scope" => Self::ForbiddenScope,
+            "spend_cap_reached" => Self::SpendCapReached,
+            "impersonation_not_supported" => Self::ImpersonationNotSupported,
+            "approval_required" => Self::ApprovalRequired,
+            "quota_exceeded" => Self::QuotaExceeded,
+            "policy_unavailable" => Self::PolicyUnavailable,
             "not_found" => Self::NotFound,
             "precondition_failed" => Self::PreconditionFailed,
             "policy_refused" => Self::PolicyRefused,
@@ -207,8 +237,9 @@ impl Error {
 
     /// Whether waiting and trying again could succeed.
     ///
-    /// True for [`Code::UpstreamUnavailable`] (the server promises it had
-    /// no effect), [`Code::RateLimited`] only when it says how long to wait,
+    /// True for [`Code::UpstreamUnavailable`] and
+    /// [`Code::PolicyUnavailable`] (the server promises they had no
+    /// effect), [`Code::RateLimited`] only when it says how long to wait,
     /// [`Code::PreconditionFailed`] after reading the object again, and
     /// [`Code::Internal`] — which promises nothing about effects, so retry a
     /// send after it only with the same idempotency key.
@@ -217,10 +248,19 @@ impl Error {
     /// deployment does not serve the option, however transient it looks),
     /// [`Code::Paused`] (clears only when an operator releases the mailbox),
     /// [`Code::NotBillable`] (waits on a person) and
-    /// [`Code::PolicyRefused`].
+    /// [`Code::SpendCapReached`] (waits on a person raising the cap).
+    /// [`Code::QuotaExceeded`] refills only when its window does, which can
+    /// be the rest of the period: [`Error::retry_after`] says when, and
+    /// whether to wait that long is the caller's decision rather than a
+    /// retry loop's. [`Code::ApprovalRequired`] and
+    /// [`Code::ImpersonationNotSupported`] need a person or a different
+    /// token. [`Code::PolicyRefused`] is not worth repeating unchanged.
     pub fn retryable(&self) -> bool {
         match self.code {
-            Code::UpstreamUnavailable | Code::PreconditionFailed | Code::Internal => true,
+            Code::UpstreamUnavailable
+            | Code::PolicyUnavailable
+            | Code::PreconditionFailed
+            | Code::Internal => true,
             Code::RateLimited => self.retry_after_ms > 0,
             _ => false,
         }
@@ -443,10 +483,18 @@ mod tests {
         assert_eq!(rounded_seconds(3_723_000), "1h2m3s");
     }
 
+    /// Covers the retry advice per code, including the codes added with
+    /// workspaces and approvals: a retry loop that repeats a refusal waiting
+    /// on a person or a refill would spin to no end.
     #[test]
     fn retryable_follows_the_servers_advice() {
         for (code, want) in [
             (Code::UpstreamUnavailable, true),
+            (Code::PolicyUnavailable, true),
+            (Code::SpendCapReached, false),
+            (Code::ImpersonationNotSupported, false),
+            (Code::ApprovalRequired, false),
+            (Code::QuotaExceeded, false),
             (Code::PreconditionFailed, true),
             (Code::Internal, true),
             (Code::Paused, false),
@@ -477,6 +525,14 @@ mod tests {
             ..Error::default()
         };
         assert!(!unwaited.retryable(), "the request has to change");
+        // Unlike a rate limit, a stated wait does not make a used-up quota
+        // retryable: it refills with its period, not after a backoff.
+        let quota = Error {
+            code: Code::QuotaExceeded,
+            retry_after_ms: 1000,
+            ..Error::default()
+        };
+        assert!(!quota.retryable(), "a quota with a wait");
     }
 
     #[test]
@@ -494,6 +550,11 @@ mod tests {
             Code::Unavailable,
             Code::Internal,
             Code::UpstreamUnavailable,
+            Code::SpendCapReached,
+            Code::ImpersonationNotSupported,
+            Code::ApprovalRequired,
+            Code::QuotaExceeded,
+            Code::PolicyUnavailable,
             Code::MalformedResponse,
         ] {
             assert_eq!(Code::from_wire(code.as_str()), code);

@@ -19,9 +19,13 @@ pub const STATE_DELIVERED: &str = "delivered";
 pub const STATE_BOUNCED: &str = "bounced";
 /// It could not be handed on; `reason` says why.
 pub const STATE_FAILED: &str = "failed";
-/// Can appear on older messages. Nothing is held.
+/// A rule of the workspace's policy needs a person to approve the message
+/// before it goes; `SendOutput::approval_id` names the approval. It becomes
+/// `STATE_QUEUED` when approved and `STATE_REJECTED` when a person refuses
+/// it or the wait lapses. Nothing a caller sends releases it, so never send
+/// it again: that is a second message, held in its turn.
 pub const STATE_HELD: &str = "held";
-/// Can appear on older messages.
+/// A person refused a held message, or the wait for approval lapsed.
 pub const STATE_REJECTED: &str = "rejected";
 
 // The event types, which `JournalEvent::kind` names and
@@ -33,6 +37,12 @@ pub const EVENT_RECEIVED: &str = "mail.received";
 pub const EVENT_QUARANTINED: &str = "mail.quarantined";
 /// A send was accepted.
 pub const EVENT_QUEUED: &str = "mail.queued";
+/// A send was held for a person to approve.
+pub const EVENT_HELD: &str = "mail.held";
+/// A person approved a held send.
+pub const EVENT_APPROVED: &str = "mail.approved";
+/// A held send was refused or lapsed; its sending budget is given back.
+pub const EVENT_REJECTED: &str = "mail.rejected";
 /// A send was handed to the provider.
 pub const EVENT_SENT: &str = "mail.sent";
 /// A send was accepted by the receiving side.
@@ -126,8 +136,8 @@ pub const KIND_THREAD: &str = "thread";
 // write needs. Exposed so a caller can check a string before spending a
 // round trip on it.
 
-/// A tenant.
-pub const PREFIX_TENANT: &str = "tenant_";
+/// A workspace.
+pub const PREFIX_WORKSPACE: &str = "workspace_";
 /// An agent, and its mailbox: the two are one identifier, not a pair that
 /// could disagree.
 pub const PREFIX_AGENT: &str = "ag_";

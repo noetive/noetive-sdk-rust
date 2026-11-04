@@ -530,8 +530,17 @@ impl Client {
 
     /// Compose and send a message.
     ///
-    /// The server either queues it or refuses it, naming the guard; nothing
-    /// waits for approval. Pass an idempotency key on every send: without
+    /// Three outcomes are normal and distinguishable. The message is
+    /// `STATE_QUEUED`. Or it is `STATE_HELD`, because a rule of the
+    /// workspace's policy needs a person to approve it first:
+    /// [`SendOutput::approval_id`] names the approval, the message goes out
+    /// when a person approves it and never otherwise, and its sending
+    /// budget is spent until it is rejected or lapses. Never send a held
+    /// message again: nothing a caller sends releases it, and a second send
+    /// is a second message. Or it is refused as `policy_refused` with
+    /// `guard` naming the rule that fired.
+    ///
+    /// Pass an idempotency key on every send: without
     /// one, a timeout retried is a second message, so this client never
     /// retries a send without one. A repeat with the same key returns the
     /// first send's result for seven days and sends nothing; one arriving

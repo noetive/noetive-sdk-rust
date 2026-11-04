@@ -8,8 +8,9 @@ mod scripted_server;
 use std::time::{Duration, Instant};
 
 use noetive::bud::{
-    ById, Change, Client, Code, Correspondents, Failure, In, MailboxView, NoRetry, PartView,
-    SendInput, TransientRetry, PART_MODE_BYTES, PART_MODE_TEXT, SENDING_PROVISIONING, STATE_QUEUED,
+    ById, Change, Client, Code, Correspondents, Failure, In, Listing, MailboxView, Me, NoRetry,
+    PartView, SendInput, TransientRetry, PART_MODE_BYTES, PART_MODE_TEXT, PREFIX_WORKSPACE,
+    SENDING_PROVISIONING, STATE_HELD, STATE_QUEUED,
 };
 use scripted_server::ScriptedServer;
 use serde_json::{json, Value};
@@ -472,6 +473,82 @@ async fn not_billable_is_its_own_code() {
     assert!(!e.retryable());
 }
 
+/// Covers the outcome that most invites a mistake: a send a person has to
+/// approve comes back held, not refused, and carries the approval it waits
+/// on. Reading it as a failure and sending again would make a second message.
+#[tokio::test]
+async fn a_held_send_names_its_approval() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/send"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "message": "message_01x", "thread": "thread_01x",
+            "state": "held", "approval_id": "appr_01x"})))
+        .mount(&server)
+        .await;
+    let out = client(&server)
+        .send(SendInput {
+            to: vec!["ada@example.com".into()],
+            text: "hi".into(),
+            idempotency_key: "k1".into(),
+            ..SendInput::default()
+        })
+        .await
+        .expect("send");
+    assert!(out.error.is_none(), "held is not a refusal");
+    assert_eq!(
+        (out.state.as_str(), out.approval_id.as_str()),
+        (STATE_HELD, "appr_01x")
+    );
+}
+
+/// Covers the fields renamed from tenant: a client still reading the old
+/// names would see an empty workspace and every sender as outside it, with
+/// no error.
+#[tokio::test]
+async fn the_workspace_is_where_the_server_says_it_is() {
+    let server = MockServer::start().await;
+    for (op, body) in [
+        (
+            "/v1/health",
+            json!({"contract": "bud/v1", "agent": "ag_01x", "workspace": "workspace_01x"}),
+        ),
+        (
+            "/v1/me.describe",
+            json!({"ref": "me", "kind": "me", "content": {"agent": "ag_01x", "workspace": "workspace_01x"}}),
+        ),
+        (
+            "/v1/folder.list",
+            json!({"ref": "ag_01x/inbox", "kind": "folder", "content": {"mailbox": "ag_01x",
+                "folder": "inbox", "messages": [{"message": "message_01x",
+                "date": "2026-01-02T03:04:05Z", "aligned": true, "in_workspace": true, "known": true}]}}),
+        ),
+    ] {
+        Mock::given(method("POST"))
+            .and(path(op))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+    let c = client(&server);
+
+    let h = c.health().await.expect("health");
+    assert_eq!(h.workspace, "workspace_01x");
+    assert!(h.workspace.starts_with(PREFIX_WORKSPACE));
+    let me: Me = c.describe_me().await.unwrap().into().unwrap();
+    assert_eq!(me.workspace, "workspace_01x");
+    let list: Listing = c
+        .list_folder(In {
+            mailbox: "ag_01x".into(),
+            ..In::default()
+        })
+        .await
+        .unwrap()
+        .into()
+        .unwrap();
+    assert!(list.messages[0].in_workspace);
+}
+
 #[tokio::test]
 async fn the_typed_views_read_what_the_server_sends() {
     let server = MockServer::start().await;
@@ -479,7 +556,7 @@ async fn the_typed_views_read_what_the_server_sends() {
         (
             "/v1/mailbox.describe",
             json!({"ref": "ag_01x", "kind": "mailbox", "content": {"mailbox": "ag_01x",
-                "folders": {"inbox": 3}, "sending": {"status": "provisioning", "reason": "domain verifying"}}}),
+                "addresses": ["ada@agents.example.com"], "folders": {"inbox": 3}, "sending": {"status": "provisioning", "reason": "domain verifying"}}}),
         ),
         (
             "/v1/correspondent.list",
@@ -511,7 +588,14 @@ async fn the_typed_views_read_what_the_server_sends() {
         .into()
         .unwrap();
     assert_eq!(mv.folders.get("inbox"), Some(&3));
+    // The mailbox names what it sends as; a client not reading the field
+    // would show a mailbox that cannot send, with no error.
+    assert_eq!(mv.addresses, ["ada@agents.example.com"]);
     assert_eq!(mv.sending.unwrap().status, SENDING_PROVISIONING);
+
+    // A server that sends no addresses reads as an empty list, not a failure.
+    let bare: MailboxView = serde_json::from_value(json!({"mailbox": "ag_01x"})).unwrap();
+    assert!(bare.addresses.is_empty());
 
     let cv: Correspondents = c
         .list_correspondents(In {

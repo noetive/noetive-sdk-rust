@@ -49,6 +49,7 @@ SendInput
   text string,omitempty
   to []string
 SendOutput
+  approval_id string,omitempty
   error object,omitempty
   message string,omitempty
   reason string,omitempty
@@ -71,7 +72,7 @@ Provenance
   dkim string,omitempty
   dmarc string,omitempty
   folder string,omitempty
-  in_tenant bool
+  in_workspace bool
   known bool
   removed map[string]number,omitempty
   spf string,omitempty
@@ -88,10 +89,10 @@ JournalEvent
   mailbox string
   message string
   seq number
-  tenant string
   thread string
   ts string
   type string
+  workspace string
 EventData
   agent_part bool,omitempty
   aligned bool,omitempty
@@ -99,7 +100,7 @@ EventData
   folder string,omitempty
   from string,omitempty
   guard string,omitempty
-  in_tenant bool,omitempty
+  in_workspace bool,omitempty
   known bool,omitempty
   message_id string,omitempty
   provider string,omitempty
@@ -120,7 +121,7 @@ Me
   readable_mailboxes []string,omitempty
   scopes []string,omitempty
   sending object,omitempty
-  tenant string
+  workspace string
 Listing
   folder string
   mailbox string
@@ -134,7 +135,7 @@ Summary
   date string
   from string,omitempty
   from_name string,omitempty
-  in_tenant bool
+  in_workspace bool
   incomplete bool,omitempty
   join string,omitempty
   known bool

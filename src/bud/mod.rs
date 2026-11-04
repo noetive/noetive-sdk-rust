@@ -25,7 +25,9 @@
 //! # Authentication
 //!
 //! Requests carry a Noetive key as `Authorization: Bearer <key>`; one key
-//! reaches every Noetive service. [`Client::from_env`] reads
+//! reaches every Noetive service. An access token the Noetive access
+//! service signed works in its place; its scope can narrow what the agent
+//! may do and never widen it. [`Client::from_env`] reads
 //! `NOETIVE_KEY_SECRET` (required) and `NOETIVE_BUD_BASE_URL` (optional,
 //! defaults to `https://bud.noetive.io`). A relay that passes each caller's
 //! own credential through uses [`Client::forwarding`] and
@@ -71,7 +73,8 @@
 //! key returns the first send's result instead of sending again, and this
 //! crate never retries a write without one, whatever retry policy is
 //! installed. Only a connection that failed before any response is retried
-//! at all.
+//! at all. A send that comes back `STATE_HELD` is waiting for a person to
+//! approve it: do not send it again.
 
 mod base64;
 mod client;
