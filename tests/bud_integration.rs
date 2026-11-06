@@ -462,7 +462,7 @@ async fn refusals_carry_what_to_do_next() {
         bounded(
             "describe_message",
             c.describe_message(ById {
-                id: "message_01aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                id: "message_01aaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 ..ById::default()
             }),
         )
