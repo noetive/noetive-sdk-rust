@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::bud::error::{preflight, Code, Error, Failure};
 use crate::bud::vocab::{
-    KIND_CORR, KIND_FOLDER, KIND_MAILBOX, KIND_ME, KIND_MESSAGE, KIND_PART, KIND_THREAD,
+    KIND_ADDRESSBOOK, KIND_CORR, KIND_FOLDER, KIND_MAILBOX, KIND_ME, KIND_MESSAGE, KIND_PART,
+    KIND_THREAD,
 };
 
 pub(crate) fn is_false(v: &bool) -> bool {
@@ -612,6 +613,39 @@ pub struct CorrespondentView {
     pub last_aligned: bool,
 }
 
+/// The workspace's agents and how to reach them. Content for
+/// `KIND_ADDRESSBOOK`.
+///
+/// Derived from the agents the workspace's owner set up, never curated, so
+/// nothing a sender writes can add a name to it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Addressbook {
+    pub workspace: String,
+    pub entries: Vec<AddressbookEntry>,
+}
+
+/// One agent in the workspace.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddressbookEntry {
+    pub agent: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// Send and receive; the first is the one the agent sends from.
+    pub addresses: Vec<String>,
+    /// Deliver to the agent and are never sent from, so mail claiming to
+    /// come from one is not from this agent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub receive_only: Vec<String>,
+    /// Marks the caller's own entry.
+    #[serde(rename = "self")]
+    #[serde(skip_serializing_if = "is_false")]
+    pub is_self: bool,
+}
+
 /// One part of a message in the mode that was asked for. Content for
 /// `KIND_PART`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -754,6 +788,7 @@ view_of_kind! {
     MailboxView => KIND_MAILBOX,
     Listing => KIND_FOLDER,
     Correspondents => KIND_CORR,
+    Addressbook => KIND_ADDRESSBOOK,
     Conversation => KIND_THREAD,
     PartView => KIND_PART,
     PartMap => KIND_MESSAGE,

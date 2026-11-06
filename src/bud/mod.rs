@@ -85,16 +85,16 @@ mod vocab;
 mod watch;
 
 pub use client::{
-    ById, Change, Client, ClientBuilder, In, DEFAULT_BASE_URL, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_RESPONSE_TIMEOUT, ENV_BASE_URL, ENV_KEY,
+    AddressbookQuery, ById, Change, Client, ClientBuilder, In, DEFAULT_BASE_URL,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, ENV_BASE_URL, ENV_KEY,
 };
 pub use error::{Code, Error, Failure};
 pub use retry::{NoRetry, RetryPolicy, TransientRetry, DEFAULT_BACKOFF};
 pub use types::{
-    Actor, Catalog, CatalogKind, CatalogOperation, Conversation, CorrespondentView, Correspondents,
-    Effect, EventData, Health, JournalEvent, Listing, MailboxView, Me, PartInfo, PartMap, PartView,
-    Provenance, PutInput, PutOutput, ReadInput, ReadOutput, SendInput, SendOutput, SendingStatus,
-    Summary, View, WaitInput, WaitOutput,
+    Actor, Addressbook, AddressbookEntry, Catalog, CatalogKind, CatalogOperation, Conversation,
+    CorrespondentView, Correspondents, Effect, EventData, Health, JournalEvent, Listing,
+    MailboxView, Me, PartInfo, PartMap, PartView, Provenance, PutInput, PutOutput, ReadInput,
+    ReadOutput, SendInput, SendOutput, SendingStatus, Summary, View, WaitInput, WaitOutput,
 };
 pub use vocab::*;
 pub use watch::{JournalStream, MAX_WAIT_SECONDS};

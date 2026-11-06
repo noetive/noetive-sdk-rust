@@ -409,6 +409,24 @@ pub struct In {
     pub cursor: String,
 }
 
+/// Narrows and pages the addressbook. The default is the first page of
+/// everybody. Sends no `in`: the book belongs to the workspace, not a mailbox.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddressbookQuery {
+    /// Keeps agents whose name or an address contains it, ignoring case.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub q: String,
+
+    /// How many agents to return: 50 by default, at most 200.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub limit: u32,
+
+    /// Resumes the listing from the cursor the previous page returned.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cursor: String,
+}
+
 /// Writes to an existing object.
 ///
 /// Not compare-and-swap: the last write wins. A body carrying a version is
@@ -511,6 +529,33 @@ impl Client {
     pub async fn list_correspondents(&self, input: In) -> Result<ReadOutput, Failure> {
         require_id(&input.mailbox, PREFIX_AGENT, "list_correspondents")?;
         self.call("correspondent.list", &input, "").await
+    }
+
+    /// The workspace addressbook: every agent in this caller's workspace
+    /// that has a mailbox, and the addresses that reach it, so a colleague
+    /// can be written to by name.
+    ///
+    /// Built from the workspace's own agents on every call, so nothing a
+    /// sender writes can add an entry, and a disabled or deleted agent is
+    /// not listed. Needs the agent to hold the book scope; without it the
+    /// answer is `forbidden_scope`. An empty page is an answer, said in
+    /// [`ReadOutput::text`]. Content decodes into
+    /// [`Addressbook`](crate::bud::Addressbook).
+    ///
+    /// ```no_run
+    /// # async fn run(c: noetive::bud::Client) -> Result<(), noetive::bud::Failure> {
+    /// use noetive::bud::{Addressbook, AddressbookQuery};
+    /// let book: Addressbook = c
+    ///     .describe_addressbook(AddressbookQuery { q: "ada".into(), ..Default::default() })
+    ///     .await?
+    ///     .into()?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn describe_addressbook(
+        &self,
+        input: AddressbookQuery,
+    ) -> Result<ReadOutput, Failure> {
+        self.call("addressbook.describe", &input, "").await
     }
 
     /// Mark a message read or unread, or replace its labels.

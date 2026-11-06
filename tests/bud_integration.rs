@@ -175,6 +175,7 @@ async fn the_catalog_serves_every_operation_this_client_calls() {
         "part.describe",
         "mailbox.describe",
         "correspondent.list",
+        "addressbook.describe",
         "message.update",
         "send",
         "watch",

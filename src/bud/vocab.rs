@@ -124,6 +124,8 @@ pub const KIND_MAILBOX: &str = "mailbox";
 pub const KIND_FOLDER: &str = "folder";
 /// Correspondents.
 pub const KIND_CORR: &str = "corr";
+/// The workspace addressbook.
+pub const KIND_ADDRESSBOOK: &str = "addressbook";
 /// One message.
 pub const KIND_MESSAGE: &str = "message";
 /// One part of a message.

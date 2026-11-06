@@ -122,6 +122,7 @@ pub(crate) fn writes(op: &str) -> bool {
             | "part.describe"
             | "mailbox.describe"
             | "correspondent.list"
+            | "addressbook.describe"
             | "help.describe"
             | "watch"
     )
@@ -140,6 +141,7 @@ mod tests {
     #[test]
     fn writes_need_a_key_reads_do_not() {
         assert!(repeatable("me.describe", ""));
+        assert!(repeatable("addressbook.describe", ""));
         assert!(repeatable("watch", ""));
         assert!(!repeatable("send", ""));
         assert!(!repeatable("message.update", ""));

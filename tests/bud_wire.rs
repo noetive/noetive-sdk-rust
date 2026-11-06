@@ -8,9 +8,9 @@ mod scripted_server;
 use std::time::{Duration, Instant};
 
 use noetive::bud::{
-    ById, Change, Client, Code, Correspondents, Failure, In, Listing, MailboxView, Me, NoRetry,
-    PartView, SendInput, TransientRetry, PART_MODE_BYTES, PART_MODE_TEXT, PREFIX_WORKSPACE,
-    SENDING_PROVISIONING, STATE_HELD, STATE_QUEUED,
+    Addressbook, AddressbookQuery, ById, Change, Client, Code, Correspondents, Failure, In,
+    Listing, MailboxView, Me, NoRetry, PartView, SendInput, TransientRetry, PART_MODE_BYTES,
+    PART_MODE_TEXT, PREFIX_WORKSPACE, SENDING_PROVISIONING, STATE_HELD, STATE_QUEUED,
 };
 use scripted_server::ScriptedServer;
 use serde_json::{json, Value};
@@ -263,6 +263,18 @@ async fn an_unkeyed_write_is_never_retried() {
     let before = srv.requests();
     let _ = c.describe_me().await.unwrap_err();
     assert_eq!(srv.requests() - before, 6, "a read is safe to repeat");
+
+    // The addressbook is a read too, though its name is not a list.
+    let before = srv.requests();
+    let _ = c
+        .describe_addressbook(AddressbookQuery::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        srv.requests() - before,
+        6,
+        "the addressbook is a read, safe to repeat"
+    );
 }
 
 #[tokio::test]
@@ -565,6 +577,13 @@ async fn the_typed_views_read_what_the_server_sends() {
                 "last_seen": "2026-01-03T03:04:05Z", "inbound": 2, "last_aligned": true}]}}),
         ),
         (
+            "/v1/addressbook.describe",
+            json!({"ref": "addressbook", "kind": "addressbook", "content": {"workspace": "workspace_01x",
+                "entries": [{"agent": "ag_01x", "name": "Ada", "kind": "assistant",
+                "addresses": ["ada@agents.example.com"], "receive_only": ["help@agents.example.com"],
+                "self": true}]}, "truncated": true, "cursor": "ag_01x"}),
+        ),
+        (
             "/v1/part.describe",
             json!({"ref": "message_01x/part/2", "kind": "part", "content": {"message": "message_01x",
                 "part": "2", "mode": "bytes", "type": "text/plain", "bytes_base64": "aGVsbG8="}}),
@@ -611,6 +630,27 @@ async fn the_typed_views_read_what_the_server_sends() {
     assert_eq!(first.addr, "ada@example.com");
     assert_eq!(first.first_seen, "2026-01-02T03:04:05Z");
     assert!(first.last_aligned);
+
+    // The addressbook decodes with the caller's own entry marked and the
+    // first address as the send-from one; a client dropping `self` or
+    // `receive_only` would let an agent mistake an alias for who it is, and
+    // dropping the cursor would silently truncate a large workspace.
+    let book = c
+        .describe_addressbook(AddressbookQuery {
+            q: "ada".into(),
+            ..AddressbookQuery::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(book.cursor, "ag_01x");
+    assert!(book.truncated, "the next page is lost");
+    let bv: Addressbook = book.clone().into().unwrap();
+    assert_eq!(bv.workspace, "workspace_01x");
+    assert!(bv.entries[0].is_self);
+    assert_eq!(bv.entries[0].addresses[0], "ada@agents.example.com");
+    assert_eq!(bv.entries[0].receive_only, ["help@agents.example.com"]);
+    // An addressbook is not a mailbox, and refusing beats zero values.
+    assert!(book.into::<MailboxView>().unwrap_err().is_preflight());
 
     let part = c
         .describe_part(ById {
@@ -664,6 +704,16 @@ async fn the_requests_carry_the_fields_that_select_them() {
     })
     .await
     .unwrap();
+    c.describe_addressbook(AddressbookQuery {
+        q: "ada".into(),
+        cursor: "ag_01x".into(),
+        ..AddressbookQuery::default()
+    })
+    .await
+    .unwrap();
+    c.describe_addressbook(AddressbookQuery::default())
+        .await
+        .unwrap();
 
     let got: Vec<(String, Value)> = server
         .received_requests()
@@ -692,6 +742,13 @@ async fn the_requests_carry_the_fields_that_select_them() {
                 "/v1/correspondent.list".to_string(),
                 json!({"in": "ag_01x", "limit": 10})
             ),
+            // The book is the workspace's, so no `in`, and unset fields are
+            // omitted rather than sent as zero values the server would refuse.
+            (
+                "/v1/addressbook.describe".to_string(),
+                json!({"q": "ada", "cursor": "ag_01x"})
+            ),
+            ("/v1/addressbook.describe".to_string(), json!({})),
         ]
     );
     let r = &server.received_requests().await.unwrap()[0];
