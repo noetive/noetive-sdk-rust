@@ -24,8 +24,9 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use noetive::bud::{
-    ById, Change, Client, Code, Conversation, Correspondents, Error, In, Listing, MailboxView, Me,
-    PartInfo, PartMap, PartView, SendInput, Summary, WaitInput, CONTRACT_VERSION, FOLDER_INBOX,
+    ById, Catalog, Change, Client, Code, Conversation, Correspondents, Error, Health, In,
+    JournalStream, Listing, MailboxView, Me, PartInfo, PartMap, PartView, PutOutput, ReadOutput,
+    SendInput, SendOutput, Summary, WaitInput, WaitOutput, CONTRACT_VERSION, FOLDER_INBOX,
     FOLDER_QUARANTINE, FOLDER_SENT, PART_MODE_BYTES, PREFIX_AGENT, PREFIX_MESSAGE,
     PREFIX_WORKSPACE, RENDER_PARTS, SENDING_PAUSED, SENDING_PROVISIONING, SENDING_READY,
 };
@@ -46,11 +47,92 @@ fn key() -> Option<String> {
     Some(key.trim().to_string())
 }
 
-/// Await `fut`, failing the test if it outlives [`REQUEST_TIMEOUT`].
-async fn bounded<T>(op: &str, fut: impl Future<Output = T>) -> T {
-    tokio::time::timeout(REQUEST_TIMEOUT, fut)
-        .await
-        .unwrap_or_else(|_| panic!("{op}: no answer within {REQUEST_TIMEOUT:?}"))
+/// The least time between two calls the suite starts: one every 120ms, about
+/// 8 a second across every test in this binary, so the parallel tests do not
+/// all start in one burst. Bud states 20 requests a second but admits fewer
+/// while its leases renew every two seconds against a bucket that holds one
+/// second of tokens.
+const PACE: Duration = Duration::from_millis(120);
+
+/// Waits for this call's slot under [`PACE`].
+async fn pace() {
+    static NEXT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    let slot = {
+        let mut next = NEXT.lock().expect("pace lock");
+        let now = Instant::now();
+        let slot = next.map_or(now, |n| n.max(now));
+        *next = Some(slot + PACE);
+        slot
+    };
+    tokio::time::sleep(slot.saturating_duration_since(Instant::now())).await;
+}
+
+/// The longest wait the suite takes for a rate limit to clear.
+///
+/// The tests run in parallel and go faster than Bud's per-second request
+/// limit, so a call refused as rate_limited is a property of the suite's pace,
+/// not of the client. The harness waits the server's hint and sends the call
+/// once more; a refused call did nothing, so that is safe for any operation. A
+/// longer wait, or a second refusal, fails the test as before. The client is
+/// unchanged: it never retries a refusal itself.
+const MAX_PACE: Duration = Duration::from_secs(3);
+
+/// What a call's output says about being refused.
+trait Refused {
+    fn refusal(&self) -> Option<&Error>;
+}
+
+macro_rules! refused_by_field {
+    ($($t:ty),*) => {$(
+        impl Refused for $t {
+            fn refusal(&self) -> Option<&Error> {
+                self.error.as_ref()
+            }
+        }
+    )*};
+}
+refused_by_field!(ReadOutput, WaitOutput, Catalog, Health, PutOutput, SendOutput);
+
+impl Refused for JournalStream {
+    fn refusal(&self) -> Option<&Error> {
+        None
+    }
+}
+
+impl<T: Refused> Refused for Result<T, noetive::bud::Failure> {
+    fn refusal(&self) -> Option<&Error> {
+        match self {
+            Ok(out) => out.refusal(),
+            Err(noetive::bud::Failure::Refused(e)) => Some(e),
+            Err(_) => None,
+        }
+    }
+}
+
+/// The wait a rate_limited refusal asks for, when it is one worth taking.
+fn pace_for(out: &impl Refused) -> Option<Duration> {
+    let e = out.refusal()?;
+    let wait = e.retry_after().max(Duration::from_millis(1));
+    (e.code == Code::RateLimited && wait <= MAX_PACE).then_some(wait)
+}
+
+/// Makes the call, failing the test if it outlives [`REQUEST_TIMEOUT`], and
+/// makes it once more after the wait a rate_limited refusal names.
+async fn bounded<T: Refused, F: Future<Output = T>>(op: &str, mut call: impl FnMut() -> F) -> T {
+    let once = async |call: F| {
+        pace().await;
+        tokio::time::timeout(REQUEST_TIMEOUT, call)
+            .await
+            .unwrap_or_else(|_| panic!("{op}: no answer within {REQUEST_TIMEOUT:?}"))
+    };
+    let out = once(call()).await;
+    match pace_for(&out) {
+        Some(wait) => {
+            tokio::time::sleep(wait).await;
+            once(call()).await
+        }
+        None => out,
+    }
 }
 
 /// A client whose key the service accepts, and who it is.
@@ -64,7 +146,7 @@ async fn setup() -> Option<(Client, Me)> {
         .base_url(PROD_BASE_URL)
         .build()
         .expect("build the client");
-    let out = bounded("describe_me", c.describe_me())
+    let out = bounded("describe_me", || c.describe_me())
         .await
         .unwrap_or_else(|e| panic!("describe_me: {e}"));
     if let Some(refusal) = out.error {
@@ -127,7 +209,7 @@ async fn an_unknown_key_is_refused_as_a_value() {
         .unwrap();
     let e = refused(
         "health",
-        bounded("health", c.health()).await,
+        bounded("health", || c.health()).await,
         |h| h.error.as_ref(),
         Code::Unauthorized,
     );
@@ -137,7 +219,7 @@ async fn an_unknown_key_is_refused_as_a_value() {
 #[tokio::test]
 async fn health_names_the_agent() {
     let Some((c, me)) = setup().await else { return };
-    let h = answered("health", bounded("health", c.health()).await, |h| {
+    let h = answered("health", bounded("health", || c.health()).await, |h| {
         h.error.as_ref()
     });
     assert_eq!(
@@ -162,7 +244,7 @@ async fn the_catalog_serves_every_operation_this_client_calls() {
     let Some((c, _)) = setup().await else { return };
     let cat = answered(
         "describe_catalog",
-        bounded("describe_catalog", c.describe_catalog()).await,
+        bounded("describe_catalog", || c.describe_catalog()).await,
         |c| c.error.as_ref(),
     );
     for op in [
@@ -189,13 +271,12 @@ async fn the_mailbox_describes_itself() {
     let Some((c, me)) = setup().await else { return };
     let out = answered(
         "describe_mailbox",
-        bounded(
-            "describe_mailbox",
+        bounded("describe_mailbox", || {
             c.describe_mailbox(ById {
                 id: me.mailbox.clone(),
                 ..ById::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -223,7 +304,7 @@ async fn every_folder_lists() {
         };
         let out = answered(
             folder,
-            bounded("list_folder", c.list_folder(input.clone())).await,
+            bounded("list_folder", || c.list_folder(input.clone())).await,
             |o| o.error.as_ref(),
         );
         let cursor = out.cursor.clone();
@@ -240,7 +321,13 @@ async fn every_folder_lists() {
         }
         answered(
             folder,
-            bounded("list_folder page 2", c.list_folder(In { cursor, ..input })).await,
+            bounded("list_folder page 2", || {
+                c.list_folder(In {
+                    cursor: cursor.clone(),
+                    ..input.clone()
+                })
+            })
+            .await,
             |o| o.error.as_ref(),
         );
     }
@@ -251,14 +338,13 @@ async fn correspondents_list() {
     let Some((c, me)) = setup().await else { return };
     let out = answered(
         "list_correspondents",
-        bounded(
-            "list_correspondents",
+        bounded("list_correspondents", || {
             c.list_correspondents(In {
                 mailbox: me.mailbox.clone(),
                 limit: 5,
                 ..In::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -280,13 +366,12 @@ async fn a_message_reads_every_way() {
 
     let text = answered(
         "describe_message",
-        bounded(
-            "describe_message",
+        bounded("describe_message", || {
             c.describe_message(ById {
                 id: s.message.clone(),
                 ..ById::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -299,14 +384,13 @@ async fn a_message_reads_every_way() {
 
     let parts = answered(
         "describe_message parts",
-        bounded(
-            "describe_message parts",
+        bounded("describe_message parts", || {
             c.describe_message(ById {
                 id: s.message.clone(),
                 render: RENDER_PARTS.into(),
                 ..ById::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -316,15 +400,14 @@ async fn a_message_reads_every_way() {
     if let Some(n) = first_text(&pm.parts) {
         let part = answered(
             "describe_part",
-            bounded(
-                "describe_part",
+            bounded("describe_part", || {
                 c.describe_part(ById {
                     id: s.message.clone(),
                     part: n.clone(),
                     mode: PART_MODE_BYTES.into(),
                     ..ById::default()
-                }),
-            )
+                })
+            })
             .await,
             |o| o.error.as_ref(),
         );
@@ -341,14 +424,13 @@ async fn a_message_reads_every_way() {
     if !s.thread.is_empty() {
         let thread = answered(
             "describe_thread",
-            bounded(
-                "describe_thread",
+            bounded("describe_thread", || {
                 c.describe_thread(ById {
                     id: s.thread.clone(),
                     max_messages: 3,
                     ..ById::default()
-                }),
-            )
+                })
+            })
             .await,
             |o| o.error.as_ref(),
         );
@@ -373,14 +455,13 @@ async fn marking_a_message_as_it_is_changes_nothing() {
     // The read state it already has: the one write this suite makes.
     answered(
         "update_message",
-        bounded(
-            "update_message",
+        bounded("update_message", || {
             c.update_message(Change {
                 id: s.message.clone(),
                 changes: serde_json::json!({"read": !s.unread}),
                 ..Change::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -397,13 +478,12 @@ async fn a_quiet_wait_is_success() {
     let start = Instant::now();
     let out = answered(
         "wait",
-        bounded(
-            "wait",
+        bounded("wait", || {
             c.wait(WaitInput {
                 timeout_seconds: 2,
                 ..WaitInput::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -418,14 +498,13 @@ async fn a_quiet_wait_is_success() {
     );
     answered(
         "wait from the cursor",
-        bounded(
-            "wait from the cursor",
+        bounded("wait from the cursor", || {
             c.wait(WaitInput {
-                cursor: out.cursor,
+                cursor: out.cursor.clone(),
                 timeout_seconds: 1,
                 ..WaitInput::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
     );
@@ -434,13 +513,12 @@ async fn a_quiet_wait_is_success() {
 #[tokio::test]
 async fn a_watch_opens_at_a_cursor() {
     let Some((c, _)) = setup().await else { return };
-    let st = bounded(
-        "watch",
+    let st = bounded("watch", || {
         c.watch(WaitInput {
             timeout_seconds: 1,
             ..WaitInput::default()
-        }),
-    )
+        })
+    })
     .await
     .unwrap_or_else(|e| panic!("watch: {e}"));
     assert!(
@@ -459,13 +537,12 @@ async fn refusals_carry_what_to_do_next() {
 
     refused(
         "describe_message of a message that does not exist",
-        bounded(
-            "describe_message",
+        bounded("describe_message", || {
             c.describe_message(ById {
                 id: "message_01aaaaaaaaaaaaaaaaaaaaaaaa".into(),
                 ..ById::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
         Code::NotFound,
@@ -473,14 +550,13 @@ async fn refusals_carry_what_to_do_next() {
 
     refused(
         "list_folder of a folder that does not exist",
-        bounded(
-            "list_folder",
+        bounded("list_folder", || {
             c.list_folder(In {
                 mailbox: me.mailbox.clone(),
                 folder: "no-such-folder".into(),
                 ..In::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
         Code::Invalid,
@@ -493,8 +569,7 @@ async fn refusals_carry_what_to_do_next() {
     // Refused before anything is queued: an attachment is not served.
     let e = refused(
         "send with an attachment",
-        bounded(
-            "send",
+        bounded("send", || {
             c.send(SendInput {
                 to: vec![to.clone()],
                 subject: "integration: refused".into(),
@@ -502,8 +577,8 @@ async fn refusals_carry_what_to_do_next() {
                 attach: vec!["message_01aaaaaaaaaaaaaaaaaaaaaaaaaa/part/2".into()],
                 idempotency_key: "integration-refused-attach".into(),
                 ..SendInput::default()
-            }),
-        )
+            })
+        })
         .await,
         |o| o.error.as_ref(),
         Code::Invalid,
@@ -516,15 +591,14 @@ async fn any_message(c: &Client, me: &Me) -> Option<Summary> {
     for folder in [FOLDER_INBOX, FOLDER_SENT] {
         let out = answered(
             folder,
-            bounded(
-                "list_folder",
+            bounded("list_folder", || {
                 c.list_folder(In {
                     mailbox: me.mailbox.clone(),
                     folder: folder.into(),
                     limit: 20,
                     ..In::default()
-                }),
-            )
+                })
+            })
             .await,
             |o| o.error.as_ref(),
         );
@@ -544,16 +618,15 @@ async fn find_message(c: &Client, me: &Me, id: &str) -> Summary {
         for _page in 0..20 {
             let out = answered(
                 folder,
-                bounded(
-                    "list_folder",
+                bounded("list_folder", || {
                     c.list_folder(In {
                         mailbox: me.mailbox.clone(),
                         folder: folder.into(),
                         limit: 200,
                         cursor: cursor.clone(),
                         ..In::default()
-                    }),
-                )
+                    })
+                })
                 .await,
                 |o| o.error.as_ref(),
             );
