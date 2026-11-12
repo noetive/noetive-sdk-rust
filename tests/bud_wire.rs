@@ -8,9 +8,10 @@ mod scripted_server;
 use std::time::{Duration, Instant};
 
 use noetive::bud::{
-    Addressbook, AddressbookQuery, ById, Change, Client, Code, Correspondents, Failure, In,
-    Listing, MailboxView, Me, NoRetry, PartView, SendInput, TransientRetry, PART_MODE_BYTES,
-    PART_MODE_TEXT, PREFIX_WORKSPACE, SENDING_PROVISIONING, STATE_HELD, STATE_QUEUED,
+    Addressbook, AddressbookQuery, ById, Change, Client, Code, Correspondents, Failure, Folder, In,
+    Listing, MailboxView, Me, Move, NoRetry, PartView, SendInput, TransientRetry,
+    EFFECT_FOLDER_CREATED, EFFECT_FOLDER_DELETED, EFFECT_MOVED, PART_MODE_BYTES, PART_MODE_TEXT,
+    PREFIX_WORKSPACE, SENDING_PROVISIONING, STATE_HELD, STATE_QUEUED,
 };
 use scripted_server::ScriptedServer;
 use serde_json::{json, Value};
@@ -881,4 +882,221 @@ async fn from_env_reads_the_one_noetive_key() {
         unset.is_preflight() && unset.to_string().contains("NOETIVE_KEY_SECRET"),
         "with the shared key unset, the refusal names it and nothing else is read: {unset}"
     );
+}
+
+/// Folder calls reach their own operation with the mailbox sent as `in`, the
+/// folder and the idempotency key; a move is a message update carrying only a
+/// folder change. Without this a folder call could land on the wrong operation
+/// or leak a field the server documents differently.
+#[tokio::test]
+async fn folder_calls_reach_their_operation_with_the_documented_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .mount(&server)
+        .await;
+    let c = client(&server);
+
+    c.create_folder(Folder {
+        mailbox: "ag_01x".into(),
+        folder: "receipts".into(),
+        idempotency_key: "k1".into(),
+    })
+    .await
+    .unwrap();
+    c.delete_folder(Folder {
+        mailbox: "ag_01x".into(),
+        folder: "receipts".into(),
+        ..Folder::default()
+    })
+    .await
+    .unwrap();
+    c.move_message(Move {
+        id: "message_01x".into(),
+        folder: "receipts".into(),
+        idempotency_key: "k2".into(),
+    })
+    .await
+    .unwrap();
+
+    let got: Vec<(String, Value)> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r.url.path().to_string(),
+                serde_json::from_slice(&r.body).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "/v1/folder.create".to_string(),
+                json!({"in": "ag_01x", "folder": "receipts", "idempotency_key": "k1"})
+            ),
+            // No key set, so none is sent.
+            (
+                "/v1/folder.delete".to_string(),
+                json!({"in": "ag_01x", "folder": "receipts"})
+            ),
+            // Only the folder change: nothing that would also mark or label.
+            (
+                "/v1/message.update".to_string(),
+                json!({
+                    "id": "message_01x",
+                    "changes": {"folder": "receipts"},
+                    "idempotency_key": "k2"
+                })
+            ),
+        ]
+    );
+}
+
+/// The effects the server reports come back to the caller, and a call that
+/// changed nothing reports none: that empty list is how a repeat is told from
+/// a first call.
+#[tokio::test]
+async fn folder_effects_come_back_and_a_repeat_has_none() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/folder.create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"ref": "ag_01x/receipts", "effects": [{"kind": "folder.created", "count": 1}]}),
+        ))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/folder.create"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ref": "ag_01x/receipts"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/folder.delete"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"ref": "ag_01x/receipts", "effects": [{"kind": "folder.deleted", "count": 1}]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/message.update"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"ref": "message_01x", "effects": [{"kind": "moved", "count": 1}]}),
+        ))
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    let folder = || Folder {
+        mailbox: "ag_01x".into(),
+        folder: "receipts".into(),
+        ..Folder::default()
+    };
+
+    let made = c.create_folder(folder()).await.unwrap();
+    assert_eq!(made.effects.len(), 1);
+    assert_eq!(made.effects[0].kind, EFFECT_FOLDER_CREATED);
+    let again = c.create_folder(folder()).await.unwrap();
+    assert!(again.error.is_none() && again.effects.is_empty());
+
+    let removed = c.delete_folder(folder()).await.unwrap();
+    assert_eq!(removed.effects[0].kind, EFFECT_FOLDER_DELETED);
+
+    let moved = c
+        .move_message(Move {
+            id: "message_01x".into(),
+            folder: "receipts".into(),
+            ..Move::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(moved.effects[0].kind, EFFECT_MOVED);
+}
+
+/// A refused move or folder call is a value like any other refusal, so a
+/// caller branches on the code (here a folder that still holds mail).
+#[tokio::test]
+async fn a_folder_refusal_is_a_value() {
+    let server = refusing(
+        409,
+        json!({"error": {"code": "precondition_failed", "message": "folder holds mail", "hint": "move its mail first"}}),
+    )
+    .await;
+    let out = client(&server)
+        .delete_folder(Folder {
+            mailbox: "ag_01x".into(),
+            folder: "receipts".into(),
+            ..Folder::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(out.error.unwrap().code, Code::PreconditionFailed);
+}
+
+/// What this crate can refuse without a round trip, for the folder calls: a
+/// mailbox of the wrong kind, no folder, a message of the wrong kind. Nothing
+/// may reach the server.
+#[tokio::test]
+async fn folder_calls_are_checked_before_sending() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let c = client(&server);
+
+    let refusals: Vec<(&str, Failure)> = vec![
+        (
+            "create_folder aimed at a message id",
+            c.create_folder(Folder {
+                mailbox: "message_01x".into(),
+                folder: "receipts".into(),
+                ..Folder::default()
+            })
+            .await
+            .unwrap_err(),
+        ),
+        (
+            "delete_folder with no folder",
+            c.delete_folder(Folder {
+                mailbox: "ag_01x".into(),
+                ..Folder::default()
+            })
+            .await
+            .unwrap_err(),
+        ),
+        (
+            "move_message with no folder",
+            c.move_message(Move {
+                id: "message_01x".into(),
+                ..Move::default()
+            })
+            .await
+            .unwrap_err(),
+        ),
+        (
+            "move_message aimed at a thread id",
+            c.move_message(Move {
+                id: "thread_01x".into(),
+                folder: "receipts".into(),
+                ..Move::default()
+            })
+            .await
+            .unwrap_err(),
+        ),
+    ];
+    for (what, failure) in refusals {
+        let e = failure.refusal().expect(what);
+        assert_eq!(
+            (e.code.clone(), e.http_status),
+            (Code::Invalid, 0),
+            "{what}"
+        );
+        assert!(failure.is_preflight(), "{what}");
+    }
+    // `expect(0)` is verified when the server drops.
 }

@@ -53,6 +53,10 @@ pub const EVENT_BOUNCED: &str = "mail.bounced";
 pub const EVENT_COMPLAINED: &str = "mail.complained";
 /// A message was marked read or unread.
 pub const EVENT_READ: &str = "mail.read";
+/// A message its agent filed in another folder. `EventData::folder` is where
+/// it went; on `EVENT_RECEIVED` and `EVENT_QUARANTINED` the folder is where it
+/// arrived.
+pub const EVENT_MOVED: &str = "mail.moved";
 /// A rendering was withheld as unsafe and a degraded one shown instead.
 pub const EVENT_RENDER_FAILED: &str = "render.failed";
 
@@ -65,7 +69,11 @@ pub const ACTOR_AGENT: &str = "agent";
 /// A person operating the service.
 pub const ACTOR_OPERATOR: &str = "operator";
 
-// The folders, which `In::folder` names.
+// The system folders, which always exist. `In::folder` names one of these or a
+// folder the mailbox made with `Client::create_folder`: lowercase letters,
+// digits and hyphens, at most 48 characters. `FOLDER_INBOX` is the default.
+// Received mail moves between inbox, quarantine and the mailbox's own folders;
+// sent mail stays in `FOLDER_SENT`.
 
 /// The default folder.
 pub const FOLDER_INBOX: &str = "inbox";
@@ -158,6 +166,13 @@ pub const PREFIX_REQUEST: &str = "request_";
 pub const EFFECT_MAIL_READ: &str = "mail.read";
 /// A message whose labels were set.
 pub const EFFECT_LABELLED: &str = "labelled";
+/// A message filed in another folder.
+pub const EFFECT_MOVED: &str = "moved";
+/// A folder made.
+pub const EFFECT_FOLDER_CREATED: &str = "folder.created";
+/// A folder removed. A call that changed nothing reports neither this nor
+/// `EFFECT_FOLDER_CREATED`.
+pub const EFFECT_FOLDER_DELETED: &str = "folder.deleted";
 
 /// Begins the rendering of anything carrying content somebody else wrote.
 ///

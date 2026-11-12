@@ -225,7 +225,9 @@ pub struct PutOutput {
     pub version: String,
     #[serde(skip_serializing_if = "is_false")]
     pub created: bool,
-    /// What the write changed: `EFFECT_MAIL_READ`, `EFFECT_LABELLED`.
+    /// What the write changed: `EFFECT_MAIL_READ`, `EFFECT_LABELLED`,
+    /// `EFFECT_MOVED`, `EFFECT_FOLDER_CREATED`, `EFFECT_FOLDER_DELETED`. Empty
+    /// when the write asked for what was already true.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
     /// A refusal. A refused write is still `Ok`: branch on this.

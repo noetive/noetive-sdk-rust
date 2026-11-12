@@ -85,7 +85,7 @@ mod vocab;
 mod watch;
 
 pub use client::{
-    AddressbookQuery, ById, Change, Client, ClientBuilder, In, DEFAULT_BASE_URL,
+    AddressbookQuery, ById, Change, Client, ClientBuilder, Folder, In, Move, DEFAULT_BASE_URL,
     DEFAULT_CONNECT_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT, ENV_BASE_URL, ENV_KEY,
 };
 pub use error::{Code, Error, Failure};

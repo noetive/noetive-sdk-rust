@@ -369,7 +369,9 @@ pub struct In {
     #[serde(rename = "in")]
     pub mailbox: String,
 
-    /// `FOLDER_INBOX` (the default), `FOLDER_SENT` or `FOLDER_QUARANTINE`.
+    /// `FOLDER_INBOX` (the default), `FOLDER_SENT`, `FOLDER_QUARANTINE` or a
+    /// folder the mailbox made. One it does not have is refused as not_found
+    /// rather than listed empty.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub folder: String,
 
@@ -436,12 +438,43 @@ pub struct AddressbookQuery {
 pub struct Change {
     pub id: String,
 
-    /// `{"read": bool, "labels": [string]}`, at least one. Labels replace
-    /// the message's labels whole, so an empty list removes them all.
+    /// `{"read": bool, "labels": [string], "folder": string}`, at least one.
+    /// Labels replace the message's labels whole, so an empty list removes
+    /// them all. Folder moves the message; see
+    /// [`move_message`](Client::move_message).
     pub changes: serde_json::Value,
 
     /// Remembered on a best-effort basis for up to an hour. Reusing one for
     /// a different change is refused as invalid.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub idempotency_key: String,
+}
+
+/// Files a message in another folder of its mailbox.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Move {
+    pub id: String,
+
+    /// `FOLDER_INBOX`, `FOLDER_QUARANTINE` or a folder the mailbox made.
+    pub folder: String,
+
+    /// Remembered on a best-effort basis for up to an hour.
+    pub idempotency_key: String,
+}
+
+/// Names one folder of one mailbox, for making or removing it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Folder {
+    /// The mailbox, by its agent's identifier. Sent as `in`.
+    #[serde(rename = "in")]
+    pub mailbox: String,
+
+    /// The folder's name: lowercase letters, digits and hyphens, at most 48
+    /// characters, and not one of the system folders.
+    pub folder: String,
+
+    /// Remembered on a best-effort basis for up to an hour.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub idempotency_key: String,
 }
@@ -558,18 +591,104 @@ impl Client {
         self.call("addressbook.describe", &input, "").await
     }
 
-    /// Mark a message read or unread, or replace its labels.
+    /// Mark a message read or unread, replace its labels, or move it to
+    /// another folder.
     ///
-    /// A precondition_failed means other label writes kept landing first. A
-    /// read change in the same request may already have applied; the request
-    /// is safe to repeat as it was. Retried on a failed connection only with
-    /// an idempotency key.
+    /// A precondition_failed means other writes kept landing first, or the
+    /// message is still being delivered; the hint says which. A change earlier
+    /// in the same request may already have applied; the request is safe to
+    /// repeat as it was. Retried on a failed connection only with an
+    /// idempotency key.
     pub async fn update_message(&self, input: Change) -> Result<PutOutput, Failure> {
         require_id(&input.id, PREFIX_MESSAGE, "update_message")?;
         if input.changes.is_null() {
             return Err(preflight("update_message needs changes").into());
         }
         self.call("message.update", &input, &input.idempotency_key)
+            .await
+    }
+
+    /// File a received message in another folder of its mailbox. It is
+    /// [`update_message`](Self::update_message) with only a folder change.
+    ///
+    /// Received mail moves between `FOLDER_INBOX`, `FOLDER_QUARANTINE` and the
+    /// folders made with [`create_folder`](Self::create_folder); sent mail
+    /// stays in `FOLDER_SENT` and a move of it is refused as invalid. A folder
+    /// the mailbox does not have is not_found. Moving a message where it
+    /// already is reports no effect. Moving out of quarantine changes where the
+    /// message is filed, not how it was authenticated: replying to it is still
+    /// refused.
+    ///
+    /// ```no_run
+    /// # async fn run(c: noetive::bud::Client) -> Result<(), noetive::bud::Failure> {
+    /// use noetive::bud::Move;
+    /// let out = c
+    ///     .move_message(Move {
+    ///         id: "message_01j...".into(),
+    ///         folder: "receipts".into(),
+    ///         ..Default::default()
+    ///     })
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn move_message(&self, input: Move) -> Result<PutOutput, Failure> {
+        require_id(&input.id, PREFIX_MESSAGE, "move_message")?;
+        if input.folder.is_empty() {
+            return Err(preflight("move_message needs a folder").into());
+        }
+        self.update_message(Change {
+            id: input.id,
+            changes: serde_json::json!({ "folder": input.folder }),
+            idempotency_key: input.idempotency_key,
+        })
+        .await
+    }
+
+    /// Make a folder in a mailbox to file mail in. Making one that already
+    /// exists reports no effect, so the call is safe to repeat. A mailbox has
+    /// at most 32 folders of its own; past that the call is refused as
+    /// precondition_failed until one is removed. Only the mailbox's own agent
+    /// can make or remove its folders. Retried on a failed connection only
+    /// with an idempotency key.
+    ///
+    /// ```no_run
+    /// # async fn run(c: noetive::bud::Client) -> Result<(), noetive::bud::Failure> {
+    /// use noetive::bud::Folder;
+    /// let out = c
+    ///     .create_folder(Folder {
+    ///         mailbox: "ag_01j...".into(),
+    ///         folder: "receipts".into(),
+    ///         ..Default::default()
+    ///     })
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn create_folder(&self, input: Folder) -> Result<PutOutput, Failure> {
+        require_folder(&input, "create_folder")?;
+        self.call("folder.create", &input, &input.idempotency_key)
+            .await
+    }
+
+    /// Remove an empty folder the mailbox made. One that still holds mail is
+    /// refused as precondition_failed and nothing changes: move its mail
+    /// elsewhere first. Removing one that is already gone reports no effect.
+    /// Retried on a failed connection only with an idempotency key.
+    ///
+    /// ```no_run
+    /// # async fn run(c: noetive::bud::Client) -> Result<(), noetive::bud::Failure> {
+    /// use noetive::bud::Folder;
+    /// let out = c
+    ///     .delete_folder(Folder {
+    ///         mailbox: "ag_01j...".into(),
+    ///         folder: "receipts".into(),
+    ///         ..Default::default()
+    ///     })
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn delete_folder(&self, input: Folder) -> Result<PutOutput, Failure> {
+        require_folder(&input, "delete_folder")?;
+        self.call("folder.delete", &input, &input.idempotency_key)
             .await
     }
 
@@ -625,6 +744,15 @@ fn require_id(id: &str, prefix: &str, op: &str) -> Result<(), Failure> {
             first_prefix(id)
         ))
         .into());
+    }
+    Ok(())
+}
+
+/// Refuse a folder call naming the wrong kind of mailbox or no folder.
+fn require_folder(input: &Folder, op: &str) -> Result<(), Failure> {
+    require_id(&input.mailbox, PREFIX_AGENT, op)?;
+    if input.folder.is_empty() {
+        return Err(preflight(format!("{op} needs a folder")).into());
     }
     Ok(())
 }

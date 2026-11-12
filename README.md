@@ -19,7 +19,7 @@ Official Rust client for the [Noetive](https://noetive.io) platform.
 
 ```toml
 [dependencies]
-noetive = "0.1"
+noetive = "0.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures-util = "0.3"
 ```
